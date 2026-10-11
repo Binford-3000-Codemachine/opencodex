@@ -137,6 +137,7 @@ export async function apiJson(
   body?: unknown,
   options: { signal?: AbortSignal; redirect?: RequestRedirect } = {},
 ): Promise<ApiResult> {
+  if (baseUrl === LINK_HOME_BASE) return linkHomeApiJson(deps, method, path);
   const fetchImpl = deps.fetchImpl ?? fetch;
   try {
     const res = await fetchImpl(`${baseUrl}${path}`, {
@@ -163,7 +164,33 @@ export async function resolveBaseUrl(deps: AccountDeps): Promise<string | null> 
   if (deps.baseUrl) return deps.baseUrl;
   const live = await findLiveProxy();
   if (!live) return null;
+  if (live.role === "client") {
+    const { readLinkChildContext } = await import("./link-child");
+    if (readLinkChildContext()) return LINK_HOME_BASE;
+  }
   return `http://${probeHostname(live.hostname)}:${live.port}`;
+}
+
+/**
+ * Remote Link Child (#6957): account reads come from the Home over the link, and every account
+ * change is refused with the Child refusal. The marker is never a URL and never reaches fetch.
+ */
+export const LINK_HOME_BASE = "ocx-link-home:";
+
+async function linkHomeApiJson(deps: AccountDeps, method: string, path: string): Promise<ApiResult> {
+  const { readLinkChildContext, linkChildReadable, linkChildRefusal, readLinkHomeJson } = await import("./link-child");
+  const link = readLinkChildContext();
+  if (!link) return { status: 503, json: { error: "The Remote Link connection changed while the command ran; retry." } };
+  const pathname = new URL(path, "http://cli.invalid").pathname;
+  if (!linkChildReadable(method, path)) {
+    return { status: 403, json: { error: linkChildRefusal(link, `${method} ${pathname}`) } };
+  }
+  try {
+    const { status, body } = await readLinkHomeJson(link, path, deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {});
+    return { status, json: (body && typeof body === "object" ? body : { error: String(body ?? "") }) as Record<string, unknown> };
+  } catch (error) {
+    return { status: 503, json: { error: error instanceof Error ? error.message : String(error) } };
+  }
 }
 
 export function proxyUnreachable(transportError?: string): number {

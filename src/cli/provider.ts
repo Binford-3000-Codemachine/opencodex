@@ -586,6 +586,7 @@ export async function handleProviderCommand(args: string[], deps: ProviderComman
 
   switch (sub) {
     case "list":
+      await (await import("./link-child")).printLinkChildLocalNotice("The providers");
       handleList(subArgs);
       break;
     case "add":
@@ -595,6 +596,7 @@ export async function handleProviderCommand(args: string[], deps: ProviderComman
       handleRemove(subArgs);
       break;
     case "show":
+      await (await import("./link-child")).printLinkChildLocalNotice("The provider settings");
       handleShow(subArgs);
       break;
     case "set-default":

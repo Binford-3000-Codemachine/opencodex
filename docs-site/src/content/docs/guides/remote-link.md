@@ -65,6 +65,16 @@ A failed link does not silently switch to a local provider.
 The Child returns a retryable `503` without forwarding the link key or request when its tunnel is failed, stopped, or not supervised.
 It also keeps the key local when another process owns the tunnel port; free that port so the Child's SSH tunnel can bind it.
 
+## What a Child shows and manages
+
+A Child runs on the Home's providers, accounts and settings, so the Home is where you change them.
+
+- **Dashboard.** The Child's dashboard shows the Home's state read-only and says "Managed by Home <name> over Remote Link". Pages such as Dashboard, Providers and Models read the Home through the link, and the usage strip in the header shows the Home's quota. Saving a change there is refused with a message that names the Home; make the change in the Home's dashboard. The Child's browser never receives a Home credential.
+- **Codex settings.** `ocx sync` on the Child (and connecting it) applies the Codex settings OpenCodex manages on the Home: Fast mode, the multi-agent mode, the web search sidecar switch, and the native sub-agent defaults when the Home syncs them. `ocx sync` and `ocx status` list the values that came from the Home. The default reasoning effort and the effort levels shown in the Codex app's model picker are Codex app settings on each computer; OpenCodex does not manage them on any computer.
+- **CLI.** Commands that only read, such as `ocx account list`, `ocx models live` and `ocx usage`, read the Home. Commands that change configuration are refused with one message that names the Home and the link and says no request was sent. `ocx status` describes the Home and the link. `ocx provider list` and `ocx config get` still show this computer's own configuration, labelled as local and inactive while the computer is linked.
+
+These reads need an OpenCodex version with the Remote Link management relay on both the Home and the Child. An older Home answers with a message asking you to upgrade it.
+
 ## Remove a Child
 
 Select **Disconnect** for the Child and confirm the alias. The Home stops the tunnel, revokes that Child's link key, and removes the saved link record.

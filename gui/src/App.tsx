@@ -590,6 +590,13 @@ export default function App() {
                 {targetError && (
                   <div className="alert alert-err" role="alert">{t("connection.machineUnavailable")}</div>
                 )}
+                {targets.link && (
+                  <Notice tone="warn">
+                    {targets.link.home
+                      ? t("connection.linkManaged", { home: targets.link.home, linkId: targets.link.linkId })
+                      : t("connection.linkManagedUnnamed", { linkId: targets.link.linkId })}
+                  </Notice>
+                )}
                 {((targets.connected && !sharedSessionReady) || remotePairingFormOpen) && (
                   <ConnectPairingForm key={`${targets.shared.serverOrigin}:${targets.shared.bootstrapPath}`} target={targets.shared} focusOnMount={remotePairingFormOpen} onConnected={async signal => {
                     if (remotePairingFormOpen) await validateRemoteLinkSession(sharedBase, undefined, signal);
