@@ -106,7 +106,7 @@ export function linkHomeName(
   return readHomeCodexSettingsRecord(linkId)?.document.home.name ?? null;
 }
 
-/** "Home mac-studio" or "its Home": the phrase every link Child message uses. */
+/** "Home home-box" or "its Home": the phrase every link Child message uses. */
 export function linkHomePhrase(
   connection: OcxClientConnectionConfig,
   readSidecar?: () => ClientLinkState | null,

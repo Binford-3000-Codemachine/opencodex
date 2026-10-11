@@ -38,7 +38,7 @@ const connection = {
 
 const document: HomeCodexSettingsDocument = {
   version: 1,
-  home: { name: "mac-studio", version: "2.84.0" },
+  home: { name: "home-box", version: "2.84.0" },
   settings: {
     fastMode: true,
     multiAgentMode: "v1",
@@ -164,7 +164,7 @@ describe("resolving the settings a Child sync applies", () => {
   test("names the Home by the Child-initiated alias first, then by the recorded host name", async () => {
     expect(linkHomeName(connection, () => null)).toBeNull();
     await resolveHomeCodexSettings(connection, KEY, { fetchImpl: serving(document) });
-    expect(linkHomeName(connection, () => null)).toBe("mac-studio");
+    expect(linkHomeName(connection, () => null)).toBe("home-box");
     mkdirSync(join(root, "link"), { recursive: true });
     expect(linkHomeName(connection, () => ({
       linkId: LINK_ID, alias: "studio-ssh", hubHostKeyFingerprint: `SHA256:${"a".repeat(43)}`, peerListenerPort: 1, tunnelPort: 23457,

@@ -147,12 +147,12 @@ describe("management CLI on a Remote Link Child", () => {
     const status: CliRemoteHubStatus = {
       connected: true, origin: `http://127.0.0.1:${TUNNEL}`, stateSource: "hub", hubVersion: "2.84.0",
       providers: [], oauth: [], subagentModels: [], truncated: false, claudeCodeEnabled: null,
-      link: { linkId: LINK_ID, homePhrase: "Home mac-studio", codexSettings: { source: "home", fetchedAt: "2026-10-11T00:00:00.000Z", lines: ["fast mode: on"] } },
+      link: { linkId: LINK_ID, homePhrase: "Home home-box", codexSettings: { source: "home", fetchedAt: "2026-10-11T00:00:00.000Z", lines: ["fast mode: on"] } },
     };
-    expect(remoteHubBannerLine(status)).toContain(`Home mac-studio over Remote Link (${LINK_ID})`);
+    expect(remoteHubBannerLine(status)).toContain(`Home home-box over Remote Link (${LINK_ID})`);
     expect(remoteHubBannerLine(status)).not.toMatch(/\bhub\b/);
     expect(linkCodexSettingsLines(status.link!)).toEqual([
-      "Codex settings from Home mac-studio (applied 2026-10-11T00:00:00.000Z):",
+      "Codex settings from Home home-box (applied 2026-10-11T00:00:00.000Z):",
       "  fast mode: on",
     ]);
   });

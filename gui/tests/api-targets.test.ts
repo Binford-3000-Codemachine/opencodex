@@ -93,10 +93,10 @@ describe("two-plane API targets", () => {
       ...status("relay"),
       sharedBase: `${machine}/api/machine/hub-relay`,
       sharedServerOrigin: machine,
-      link: { linkId: `lnk_${"a".repeat(16)}`, home: "mac-studio", readOnly: true },
+      link: { linkId: `lnk_${"a".repeat(16)}`, home: "home-box", readOnly: true },
     });
     expect(linked.shared).toMatchObject({ baseUrl: "/api/machine/hub-relay", serverOrigin: machine, transport: "relay" });
-    expect(linked.link).toEqual({ linkId: `lnk_${"a".repeat(16)}`, home: "mac-studio" });
+    expect(linked.link).toEqual({ linkId: `lnk_${"a".repeat(16)}`, home: "home-box" });
     const malformed = targetsFromMachineStatus("", {
       ...status("relay"),
       link: { linkId: "not-a-link", home: "x", readOnly: true },
