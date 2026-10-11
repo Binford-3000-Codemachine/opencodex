@@ -28,6 +28,14 @@ export const LINK_MANAGEMENT_READ_PATHS: readonly string[] = [
   "/api/codex-auth/accounts",
   "/api/oauth/accounts",
   "/api/providers/keys",
+  "/api/oauth/providers",
+  "/api/subagent-models",
+  "/api/subagent-model-fallback",
+  "/api/catalog",
+  "/api/system/memory",
+  "/api/provider-presets",
+  "/api/model-presets",
+  "/api/provider-context-caps",
 ];
 const READ_PATHS = new Set(LINK_MANAGEMENT_READ_PATHS);
 /** Query keys that make a read trigger upstream work on the Home. */
