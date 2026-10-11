@@ -199,7 +199,12 @@ async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
     console.error(ACCOUNT_USAGE);
     return 1;
   }
-  const config = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
+  const classification = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
+  if ("error" in classification) {
+    console.error(`Error: ${classification.error}`);
+    return 1;
+  }
+  const config = classification.config;
   const baseUrl = await resolveBaseUrl(deps);
   if (!baseUrl) return proxyUnreachable();
 
@@ -289,7 +294,12 @@ async function cmdCurrent(rest: string[], deps: AccountDeps): Promise<number> {
     console.error(ACCOUNT_USAGE);
     return 1;
   }
-  const config = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
+  const classification = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
+  if ("error" in classification) {
+    console.error(`Error: ${classification.error}`);
+    return 1;
+  }
+  const config = classification.config;
   const c = classifyAccount(config, name);
   if ("error" in c) {
     console.error(`Error: ${c.error}. Known candidates: ${candidateNames(config)}`);
@@ -332,7 +342,12 @@ async function cmdUse(rest: string[], deps: AccountDeps): Promise<number> {
     console.error(ACCOUNT_USAGE);
     return 1;
   }
-  const config = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
+  const classification = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
+  if ("error" in classification) {
+    console.error(`Error: ${classification.error}`);
+    return 1;
+  }
+  const config = classification.config;
   const c = classifyAccount(config, name);
   if ("error" in c) {
     console.error(`Error: ${c.error}. Known candidates: ${candidateNames(config)}`);
@@ -392,7 +407,12 @@ async function cmdClear(rest: string[], deps: AccountDeps): Promise<number> {
     console.error(ACCOUNT_USAGE);
     return 1;
   }
-  const config = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
+  const classification = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
+  if ("error" in classification) {
+    console.error(`Error: ${classification.error}`);
+    return 1;
+  }
+  const config = classification.config;
   const c = classifyAccount(config, name);
   if ("error" in c) {
     console.error(`Error: ${c.error}. Known candidates: ${candidateNames(config)}`);

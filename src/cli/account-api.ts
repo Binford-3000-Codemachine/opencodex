@@ -196,16 +196,23 @@ async function linkHomeApiJson(deps: AccountDeps, method: string, path: string):
 /**
  * The config account commands classify providers against. On a Remote Link Child the local
  * providers are inactive, so the Home's `/api/providers` projection (presence flags only) takes
- * their place; anywhere else, or when the Home cannot be read, the local config is returned.
+ * their place. Anywhere else the local config is returned. When the Home cannot be read the
+ * result is an error: classifying against the inactive local providers would answer for the
+ * wrong machine.
  */
-export async function accountClassificationConfig(deps: AccountDeps, local: OcxConfig): Promise<OcxConfig> {
-  if (deps.baseUrl) return local;
+export async function accountClassificationConfig(
+  deps: AccountDeps,
+  local: OcxConfig,
+): Promise<{ config: OcxConfig } | { error: string }> {
+  if (deps.baseUrl) return { config: local };
   const { readLinkChildContext, readLinkHomeJson } = await import("./link-child");
   const link = readLinkChildContext();
-  if (!link) return local;
+  if (!link) return { config: local };
+  const unavailable = (detail: string) => ({ error: `Could not read the provider list from ${link.homePhrase} over Remote Link (${link.linkId}): ${detail}.` });
   try {
     const { status, body } = await readLinkHomeJson(link, "/api/providers", deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {});
-    if (status !== 200 || !Array.isArray(body)) return local;
+    if (status !== 200) return unavailable(`the Home answered HTTP ${status}`);
+    if (!Array.isArray(body)) return unavailable("the Home returned an unreadable provider list");
     const providers: Record<string, unknown> = {};
     for (const row of body) {
       if (!row || typeof row !== "object" || typeof (row as { name?: unknown }).name !== "string") continue;
@@ -213,9 +220,9 @@ export async function accountClassificationConfig(deps: AccountDeps, local: OcxC
       // A placeholder marks presence for classification; no credential value crosses the link.
       providers[name] = { ...rest, ...(hasApiKey === true ? { apiKey: "home-credential" } : {}) };
     }
-    return { ...local, providers: providers as OcxConfig["providers"] };
-  } catch {
-    return local;
+    return { config: { ...local, providers: providers as OcxConfig["providers"] } };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
   }
 }
 

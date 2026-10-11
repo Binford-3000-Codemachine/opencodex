@@ -141,14 +141,19 @@ describe("management CLI on a Remote Link Child", () => {
     writeChild();
     const seen: Request[] = [];
     const local = { port: 10100, providers: {} } as unknown as OcxConfig;
-    const config = await accountClassificationConfig({ fetchImpl: homeServing([
+    const classified = await accountClassificationConfig({ fetchImpl: homeServing([
       { name: "home-keyed", adapter: "openai-chat", baseUrl: "https://example.test/v1", hasApiKey: true, authMode: "key" },
     ], seen) }, local);
+    if ("error" in classified) throw new Error(classified.error);
+    const config = classified.config;
     expect(seen[0]!.url).toBe(`http://127.0.0.1:${TUNNEL}/v1/link-management/api/providers`);
     expect(classifyAccount(config, "home-keyed")).toEqual({ type: "api-key" });
     expect(classifyAccount(local, "home-keyed")).toEqual({ error: 'unknown provider "home-keyed"' });
+    // A Home that cannot answer is an error, never a fall back to the inactive local providers.
+    const failed = await accountClassificationConfig({ fetchImpl: homeServing({ error: "boom" }, seen, 500) }, local);
+    expect(failed).toEqual({ error: `Could not read the provider list from its Home over Remote Link (${LINK_ID}): the Home answered HTTP 500.` });
     writeChild("hub");
-    expect(await accountClassificationConfig({}, local)).toBe(local);
+    expect(await accountClassificationConfig({}, local)).toEqual({ config: local });
   });
 
   test("usage and status name the Home instead of a hub", async () => {
