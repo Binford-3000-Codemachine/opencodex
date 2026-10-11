@@ -342,6 +342,14 @@ async function cmdUse(rest: string[], deps: AccountDeps): Promise<number> {
     console.error(ACCOUNT_USAGE);
     return 1;
   }
+  // #6957: an account change on a link Child is refused before any Home read.
+  if (!deps.baseUrl) {
+    const refusal = (await import("./link-child")).linkChildProviderChangeRefusal("ocx account use");
+    if (refusal) {
+      console.error(`Error: ${refusal}`);
+      return 1;
+    }
+  }
   const classification = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
   if ("error" in classification) {
     console.error(`Error: ${classification.error}`);
@@ -406,6 +414,14 @@ async function cmdClear(rest: string[], deps: AccountDeps): Promise<number> {
     if (leftover) console.error(leftover);
     console.error(ACCOUNT_USAGE);
     return 1;
+  }
+  // #6957: an account change on a link Child is refused before any Home read.
+  if (!deps.baseUrl) {
+    const refusal = (await import("./link-child")).linkChildProviderChangeRefusal("ocx account clear");
+    if (refusal) {
+      console.error(`Error: ${refusal}`);
+      return 1;
+    }
   }
   const classification = await accountClassificationConfig(deps, deps.loadConfigImpl?.() ?? loadConfig());
   if ("error" in classification) {

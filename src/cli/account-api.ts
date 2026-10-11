@@ -211,7 +211,12 @@ export async function accountClassificationConfig(
   const unavailable = (detail: string) => ({ error: `Could not read the provider list from ${link.homePhrase} over Remote Link (${link.linkId}): ${detail}.` });
   try {
     const { status, body } = await readLinkHomeJson(link, "/api/providers", deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {});
-    if (status !== 200) return unavailable(`the Home answered HTTP ${status}`);
+    if (status !== 200) {
+      // Keep the Home's own sentence (for example the upgrade instruction an older Home yields).
+      const message = body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string"
+        ? (body as { error: string }).error : null;
+      return unavailable(message ?? `the Home answered HTTP ${status}`);
+    }
     if (!Array.isArray(body)) return unavailable("the Home returned an unreadable provider list");
     const providers: Record<string, unknown> = {};
     for (const row of body) {

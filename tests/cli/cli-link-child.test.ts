@@ -150,8 +150,12 @@ describe("management CLI on a Remote Link Child", () => {
     expect(classifyAccount(config, "home-keyed")).toEqual({ type: "api-key" });
     expect(classifyAccount(local, "home-keyed")).toEqual({ error: 'unknown provider "home-keyed"' });
     // A Home that cannot answer is an error, never a fall back to the inactive local providers.
-    const failed = await accountClassificationConfig({ fetchImpl: homeServing({ error: "boom" }, seen, 500) }, local);
+    const failed = await accountClassificationConfig({ fetchImpl: homeServing({}, seen, 500) }, local);
     expect(failed).toEqual({ error: `Could not read the provider list from its Home over Remote Link (${LINK_ID}): the Home answered HTTP 500.` });
+    const explained = await accountClassificationConfig({ fetchImpl: homeServing({ error: "provider store busy" }, seen, 503) }, local);
+    expect(explained).toEqual({ error: `Could not read the provider list from its Home over Remote Link (${LINK_ID}): provider store busy.` });
+    const older = await accountClassificationConfig({ fetchImpl: homeServing({ error: { code: "not_found" } }, seen, 404) }, local);
+    expect("error" in older && older.error).toContain("upgrade the Home");
     writeChild("hub");
     expect(await accountClassificationConfig({}, local)).toEqual({ config: local });
   });
