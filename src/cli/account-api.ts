@@ -193,6 +193,32 @@ async function linkHomeApiJson(deps: AccountDeps, method: string, path: string):
   }
 }
 
+/**
+ * The config account commands classify providers against. On a Remote Link Child the local
+ * providers are inactive, so the Home's `/api/providers` projection (presence flags only) takes
+ * their place; anywhere else, or when the Home cannot be read, the local config is returned.
+ */
+export async function accountClassificationConfig(deps: AccountDeps, local: OcxConfig): Promise<OcxConfig> {
+  if (deps.baseUrl) return local;
+  const { readLinkChildContext, readLinkHomeJson } = await import("./link-child");
+  const link = readLinkChildContext();
+  if (!link) return local;
+  try {
+    const { status, body } = await readLinkHomeJson(link, "/api/providers", deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {});
+    if (status !== 200 || !Array.isArray(body)) return local;
+    const providers: Record<string, unknown> = {};
+    for (const row of body) {
+      if (!row || typeof row !== "object" || typeof (row as { name?: unknown }).name !== "string") continue;
+      const { name, hasApiKey, ...rest } = row as Record<string, unknown> & { name: string };
+      // A placeholder marks presence for classification; no credential value crosses the link.
+      providers[name] = { ...rest, ...(hasApiKey === true ? { apiKey: "home-credential" } : {}) };
+    }
+    return { ...local, providers: providers as OcxConfig["providers"] };
+  } catch {
+    return local;
+  }
+}
+
 export function proxyUnreachable(transportError?: string): number {
   console.error("Proxy not reachable. Start it with 'ocx start' or 'ocx ensure'.");
   // Naming the transport cause distinguishes "nothing is listening" from a refused

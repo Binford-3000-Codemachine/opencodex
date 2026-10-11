@@ -120,6 +120,9 @@ describe("Remote Link management relay on the Home", () => {
     expect(caps.status).toBe(200);
     expect(caps.headers.get("cache-control")).toBe("no-store");
     expect(Array.isArray((await caps.json() as { efforts?: unknown }).efforts)).toBe(true);
+    const head = await get(base, "/v1/link-management/api/settings", LINKED_KEY, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
   });
 
   test("relays a masked projection and never a provider credential", async () => {

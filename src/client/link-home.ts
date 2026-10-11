@@ -122,8 +122,14 @@ export function linkHomePhrase(
 export function linkBoundFetch(connection: LinkHomeConnection, admissionKey: string): typeof fetch {
   const target = linkTarget(connection, admissionKey);
   return ((input: RequestInfo | URL, init?: RequestInit) => {
-    const url = input instanceof Request ? input.url : String(input);
-    return fetchBoundLinkRelay(target, url, { ...(init ?? {}), redirect: "manual" });
+    // A Request keeps its method, headers and signal unless init overrides them.
+    const request = input instanceof Request ? input : null;
+    const url = request ? request.url : String(input);
+    return fetchBoundLinkRelay(target, url, {
+      ...(request ? { method: request.method, headers: request.headers, signal: request.signal } : {}),
+      ...(init ?? {}),
+      redirect: "manual",
+    });
   }) as typeof fetch;
 }
 
@@ -206,9 +212,11 @@ export type HomeCodexSettingsSource =
   | { source: "local"; reason: string };
 
 /**
- * The settings a sync applies. A fresh read is recorded; a failed read reuses the last record
- * for this link so a brief outage never flips the Child back to its local values; a Home that
- * predates the route leaves the Child's local values in place and says so.
+ * The settings a sync applies. A failed read reuses the last record for this link so a brief
+ * outage never flips the Child back to its local values; a Home that predates the route leaves
+ * the Child's local values in place and says so. A fresh read is NOT recorded here: the caller
+ * records it with `recordHomeCodexSettings` only after the injection that applies it succeeds,
+ * because `ocx status` reads the record as "applied".
  */
 export async function resolveHomeCodexSettings(
   connection: LinkHomeConnection,
@@ -219,9 +227,7 @@ export async function resolveHomeCodexSettings(
   if (!linkId) return { source: "local", reason: "not a Remote Link Child" };
   const fetched = await fetchHomeCodexSettings(connection, admissionKey, deps);
   if (fetched.kind === "fresh") {
-    const fetchedAt = (deps.now ?? (() => new Date()))().toISOString();
-    writeHomeCodexSettingsRecord({ linkId, fetchedAt, document: fetched.document });
-    return { source: "home", document: fetched.document, fetchedAt };
+    return { source: "home", document: fetched.document, fetchedAt: (deps.now ?? (() => new Date()))().toISOString() };
   }
   if (fetched.kind === "unsupported") {
     clearHomeCodexSettingsRecord();
@@ -231,4 +237,12 @@ export async function resolveHomeCodexSettings(
   return cached
     ? { source: "cached", document: cached.document, fetchedAt: cached.fetchedAt, reason: fetched.reason }
     : { source: "local", reason: fetched.reason };
+}
+
+/** Record settings a successful injection applied. Best effort: the config is already written. */
+export function recordHomeCodexSettings(linkId: string, settings: HomeCodexSettingsSource): void {
+  if (settings.source !== "home") return;
+  try {
+    writeHomeCodexSettingsRecord({ linkId, fetchedAt: settings.fetchedAt, document: settings.document });
+  } catch { /* the next sync records it */ }
 }

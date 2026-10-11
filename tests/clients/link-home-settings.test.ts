@@ -20,6 +20,7 @@ import {
   homeCodexSettingsPath,
   linkHomeName,
   readHomeCodexSettingsRecord,
+  recordHomeCodexSettings,
   resolveHomeCodexSettings,
 } from "../../src/client/link-home";
 import { deriveCodexInjectionPlan } from "../../src/codex/inject/plan";
@@ -71,6 +72,10 @@ function serving(body: unknown, status = 200, seen: Request[] = []): typeof fetc
     seen.push(new Request(String(input), init));
     return Response.json(body, { status });
   }) as typeof fetch;
+}
+
+async function applied(): Promise<void> {
+  recordHomeCodexSettings(LINK_ID, await resolveHomeCodexSettings(connection, KEY, { fetchImpl: serving(document) }));
 }
 
 describe("Home Codex settings document", () => {
@@ -138,19 +143,22 @@ describe("Home Codex settings document", () => {
 });
 
 describe("resolving the settings a Child sync applies", () => {
-  test("a fresh read is sent with the link key and recorded privately", async () => {
+  test("a fresh read is sent with the link key and recorded privately only once applied", async () => {
     const seen: Request[] = [];
     const resolved = await resolveHomeCodexSettings(connection, KEY, { fetchImpl: serving(document, 200, seen), now: () => new Date("2026-10-11T00:00:00.000Z") });
     expect(resolved).toEqual({ source: "home", document, fetchedAt: "2026-10-11T00:00:00.000Z" });
     expect(seen[0]!.url).toBe("http://127.0.0.1:23457/v1/link-management/codex-settings");
     expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${KEY}`);
+    // Not yet applied: `ocx status` must not report settings an injection never wrote.
+    expect(readHomeCodexSettingsRecord(LINK_ID)).toBeNull();
+    recordHomeCodexSettings(LINK_ID, resolved);
     expect(readHomeCodexSettingsRecord(LINK_ID)?.document).toEqual(document);
     expect(readHomeCodexSettingsRecord(`lnk_${"e".repeat(16)}`)).toBeNull();
     if (process.platform !== "win32") expect(statSync(homeCodexSettingsPath()).mode & 0o777).toBe(0o600);
   });
 
   test("a failed read reuses the last record; a Home without the route keeps local values", async () => {
-    await resolveHomeCodexSettings(connection, KEY, { fetchImpl: serving(document) });
+    await applied();
     const failing = (async () => { throw new Error("tunnel down"); }) as unknown as typeof fetch;
     const cached = await resolveHomeCodexSettings(connection, KEY, { fetchImpl: failing });
     expect(cached).toMatchObject({ source: "cached", document, reason: "the Home is unreachable" });
@@ -163,7 +171,7 @@ describe("resolving the settings a Child sync applies", () => {
 
   test("names the Home by the Child-initiated alias first, then by the recorded host name", async () => {
     expect(linkHomeName(connection, () => null)).toBeNull();
-    await resolveHomeCodexSettings(connection, KEY, { fetchImpl: serving(document) });
+    await applied();
     expect(linkHomeName(connection, () => null)).toBe("home-box");
     mkdirSync(join(root, "link"), { recursive: true });
     expect(linkHomeName(connection, () => ({

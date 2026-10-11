@@ -8,8 +8,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RuntimeApiError, runtimeRequest } from "../../src/cli/runtime-api";
-import { apiJson, LINK_HOME_BASE } from "../../src/cli/account-api";
-import { linkChildLocalNotice, readLinkChildContext } from "../../src/cli/link-child";
+import { accountClassificationConfig, apiJson, classifyAccount, LINK_HOME_BASE } from "../../src/cli/account-api";
+import { linkChildLocalNotice, linkChildProviderChangeRefusal, readLinkChildContext } from "../../src/cli/link-child";
+import type { OcxConfig } from "../../src/types";
 import { linkCodexSettingsLines, remoteHubBannerLine, type CliRemoteHubStatus } from "../../src/cli/status";
 import { hubStateFailureReason } from "../../src/client/hub-state";
 import { fetchHubUsage, HubClientError } from "../../src/client/hub-client";
@@ -130,8 +131,24 @@ describe("management CLI on a Remote Link Child", () => {
   test("local reads are labelled as local and inactive", () => {
     writeChild();
     expect(linkChildLocalNotice("The providers")).toContain("inactive while it is linked");
+    expect(linkChildProviderChangeRefusal("ocx provider add")).toContain("ocx provider add runs on the Home");
     writeChild("hub");
     expect(linkChildLocalNotice("The providers")).toBeNull();
+    expect(linkChildProviderChangeRefusal("ocx provider add")).toBeNull();
+  });
+
+  test("account commands classify providers from the Home, without any credential value", async () => {
+    writeChild();
+    const seen: Request[] = [];
+    const local = { port: 10100, providers: {} } as unknown as OcxConfig;
+    const config = await accountClassificationConfig({ fetchImpl: homeServing([
+      { name: "home-keyed", adapter: "openai-chat", baseUrl: "https://example.test/v1", hasApiKey: true, authMode: "key" },
+    ], seen) }, local);
+    expect(seen[0]!.url).toBe(`http://127.0.0.1:${TUNNEL}/v1/link-management/api/providers`);
+    expect(classifyAccount(config, "home-keyed")).toEqual({ type: "api-key" });
+    expect(classifyAccount(local, "home-keyed")).toEqual({ error: 'unknown provider "home-keyed"' });
+    writeChild("hub");
+    expect(await accountClassificationConfig({}, local)).toBe(local);
   });
 
   test("usage and status name the Home instead of a hub", async () => {

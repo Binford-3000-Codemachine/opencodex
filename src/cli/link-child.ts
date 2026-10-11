@@ -49,6 +49,20 @@ export async function printLinkChildLocalNotice(what: string): Promise<void> {
   if (notice) console.error(notice);
 }
 
+/** `ocx config set|unset|import` on a link Child: the write is local and its routing parts inactive. */
+export async function printLinkChildLocalWriteNotice(): Promise<void> {
+  const link = readLinkChildContext();
+  if (!link) return;
+  console.error(`Note: this machine is a Remote Link Child managed by ${link.homePhrase} (link ${link.linkId}). `
+    + "This writes this machine's local configuration; its provider, model and routing settings stay inactive while it is linked, and the Home's apply.");
+}
+
+/** The refusal for a local provider change on a link Child, or null elsewhere. */
+export function linkChildProviderChangeRefusal(operation: string): string | null {
+  const link = readLinkChildContext();
+  return link ? linkChildRefusal(link, operation) : null;
+}
+
 /** Can this management request be answered by reading the Home? */
 export function linkChildReadable(method: string, path: string): boolean {
   const url = new URL(path.startsWith("/") ? path : `/${path}`, "http://cli.invalid");

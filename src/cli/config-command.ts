@@ -250,6 +250,7 @@ export async function handleConfigCommand(argv: string[]): Promise<number> {
       return;
     }
     if (action === "set" || action === "unset") {
+      await (await import("./link-child")).printLinkChildLocalWriteNotice();
       const path = args.shift();
       const raw = action === "set" ? args.shift() : undefined;
       if (!path || (action === "set" && raw === undefined)) throw new CliUsageError(action === "unset" ? "config path is required" : "config path and value are required", USAGE);
@@ -320,6 +321,7 @@ export async function handleConfigCommand(argv: string[]): Promise<number> {
       return;
     }
     if (action === "import") {
+      await (await import("./link-child")).printLinkChildLocalWriteNotice();
       const path = args.shift();
       const yes = takeFlag(args, "--yes");
       if (!path) throw new CliUsageError("import path is required", USAGE);

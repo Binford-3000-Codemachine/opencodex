@@ -35,8 +35,9 @@ export async function handleLinkManagementRequest(
   const target = linkManagementTarget(url);
   if (!target) return notFound();
   const local = new URL(`${target.pathname}${target.search}`, "http://127.0.0.1");
+  // The handlers branch on GET; an admitted HEAD runs as GET and its body is dropped below.
   const inner = new Request(local.href, {
-    method: req.method,
+    method: "GET",
     headers: { accept: "application/json", host: "127.0.0.1" },
   });
   const response = await handleManagementAPI(inner, local, config, deps, undefined, sessionControl, { trustedLoopback: false });

@@ -584,6 +584,16 @@ export async function handleProviderCommand(args: string[], deps: ProviderComman
     return;
   }
 
+  // #6957: a link Child's local providers are inactive; changing them is refused like any other
+  // provider change, which belongs to the Home.
+  if (sub === "add" || sub === "remove" || sub === "set-default") {
+    const refusal = (await import("./link-child")).linkChildProviderChangeRefusal(`ocx provider ${sub}`);
+    if (refusal) {
+      console.error(refusal);
+      process.exitCode = 1;
+      return;
+    }
+  }
   switch (sub) {
     case "list":
       await (await import("./link-child")).printLinkChildLocalNotice("The providers");

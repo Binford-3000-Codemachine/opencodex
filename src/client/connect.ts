@@ -79,6 +79,7 @@ import {
   clearHomeCodexSettingsRecord,
   fetchHomeCodexSettings,
   resolveHomeCodexSettings,
+  recordHomeCodexSettings,
   writeHomeCodexSettingsRecord,
   type HomeCodexSettingsSource,
   type LinkHomeDeps,
@@ -754,7 +755,8 @@ export async function connectClient(
       commitClientConnection(connection);
       committed = true;
     }), deps.lifecycleLockDeps);
-    if (homeSettings?.kind === "fresh" && linkMetadata) {
+    // Recorded only when the injection that applied it ran (not with --no-sync).
+    if (homeSettings?.kind === "fresh" && linkMetadata && injectionCommitted) {
       try {
         writeHomeCodexSettingsRecord({ linkId: linkMetadata.linkId, fetchedAt: now, document: homeSettings.document });
       } catch { /* the next sync records it; the applied config is already committed */ }
@@ -864,6 +866,7 @@ export async function syncConnectedClient(
     });
     if (!result.success || result.status === "skipped") throw new Error(result.message);
     injected = true;
+    if (homeSettings && next.link) recordHomeCodexSettings(next.link.linkId, homeSettings);
   }
   const cacheSynced = withClientLifecycleSync(() => {
     beforeClientWrite();
