@@ -15,7 +15,6 @@ export const LINK_MANAGEMENT_READ_PATHS: readonly string[] = [
   "/api/system/health",
   "/api/startup-health",
   "/api/providers",
-  "/api/models",
   "/api/settings",
   "/api/usage",
   "/api/effort-caps",
@@ -29,8 +28,6 @@ export const LINK_MANAGEMENT_READ_PATHS: readonly string[] = [
   "/api/oauth/accounts",
   "/api/providers/keys",
   "/api/oauth/providers",
-  "/api/subagent-models",
-  "/api/subagent-model-fallback",
   "/api/catalog",
   "/api/system/memory",
   "/api/provider-presets",
@@ -38,8 +35,13 @@ export const LINK_MANAGEMENT_READ_PATHS: readonly string[] = [
   "/api/provider-context-caps",
 ];
 const READ_PATHS = new Set(LINK_MANAGEMENT_READ_PATHS);
-/** Query keys that make a read trigger upstream work on the Home. */
-const REFRESH_KEYS = ["refresh", "reload", "force"];
+/**
+ * Query keys that make a read trigger upstream work on the Home: forced refreshes and the
+ * per-account quota probes `?quota=1` starts on the OAuth-account and key-pool reads.
+ * `/api/models`, `/api/subagent-models` and `/api/subagent-model-fallback` are absent for the
+ * same reason: they run live provider discovery and may persist initial model selection.
+ */
+const REFRESH_KEYS = ["refresh", "reload", "force", "quota"];
 
 /** Is `method path?query` (a Home management path, without the link prefix) readable over the link? */
 export function linkManagementReadAllowed(method: string, pathname: string, search: URLSearchParams | string = ""): boolean {

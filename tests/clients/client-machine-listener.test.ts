@@ -504,6 +504,8 @@ describe("client machine listener in link mode", () => {
       ["POST", "/api/machine/hub-relay/api/providers"],
       ["GET", "/api/machine/hub-relay/api/logs"],
       ["GET", "/api/machine/hub-relay/api/provider-quotas?refresh=1"],
+      ["GET", "/api/machine/hub-relay/api/oauth/accounts?provider=anthropic&quota=1"],
+      ["GET", "/api/machine/hub-relay/api/models"],
       ["GET", "/api/machine/hub-relay/api/diagnostics/project-config"],
     ];
     for (const [method, path] of cases) {

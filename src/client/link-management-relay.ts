@@ -38,7 +38,7 @@ export async function relayLinkManagementRead(
   const query = suffix.indexOf("?");
   const pathname = query === -1 ? suffix : suffix.slice(0, query);
   const search = query === -1 ? "" : suffix.slice(query);
-  if (!linkManagementReadAllowed(req.method, pathname, search)) {
+  if (!linkManagementReadAllowed(req.method, pathname, new URLSearchParams(search.slice(1)))) {
     return linkChildRefusalResponse(homePhrase, linkId, `${req.method.toUpperCase()} ${pathname}`);
   }
   const admissionKey = ingress.linkKey();

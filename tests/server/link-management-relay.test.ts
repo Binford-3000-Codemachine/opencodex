@@ -147,6 +147,12 @@ describe("Remote Link management relay on the Home", () => {
       ["GET", "/v1/link-management/api/config"],
       ["GET", "/v1/link-management/api/provider-quotas?refresh=1"],
       ["GET", "/v1/link-management/api/codex-auth/accounts?refresh=1"],
+      // Reads that make the Home do upstream work or persist discovery are not reads here.
+      ["GET", "/v1/link-management/api/oauth/accounts?provider=anthropic&quota=1"],
+      ["GET", "/v1/link-management/api/providers/keys?name=mock&quota=1"],
+      ["GET", "/v1/link-management/api/models"],
+      ["GET", "/v1/link-management/api/subagent-models"],
+      ["GET", "/v1/link-management/api/subagent-model-fallback"],
       ["GET", "/v1/link-management/api/diagnostics/project-config"],
       ["GET", "/v1/link-management/codex-settings?x=1"],
       ["GET", "/v1/link-management"],
