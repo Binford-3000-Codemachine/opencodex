@@ -28,19 +28,26 @@ const provider: OcxProviderConfig = {
   requestPacing: { enabled: true, maxConcurrentRequests: 1 },
 };
 
-// Each case's turn signal is aborted in cleanup, so a case that fails mid-flight cannot leave a queued
-// send, a pending deadline or an open stream running into the next file in the same Bun process.
+// Each case's turn signal is aborted in cleanup, and streams a case opened are torn down, so a case that
+// fails mid-flight cannot leave a queued send, a pending deadline or an open stream running into the next
+// file in the same Bun process. Real timers come back even if that teardown throws.
 let turn = new AbortController();
+let teardown: Array<() => unknown> = [];
 beforeEach(() => {
   turn = new AbortController();
+  teardown = [];
   jest.useFakeTimers();
 });
 afterEach(async () => {
-  turn.abort(new DOMException("test finished", "AbortError"));
-  await drain();
-  resetProviderRequestPacingForTest();
-  jest.clearAllTimers();
-  jest.useRealTimers();
+  try {
+    turn.abort(new DOMException("test finished", "AbortError"));
+    for (const step of teardown.splice(0)) await step();
+    await drain();
+    resetProviderRequestPacingForTest();
+  } finally {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  }
 });
 
 /** Let promise chains and stream reads finish without moving the virtual clock. */
@@ -234,6 +241,10 @@ describe("web-search pacing and response-header deadline", () => {
     let bodyController!: ReadableStreamDefaultController<Uint8Array>;
     const upstream = new ReadableStream<Uint8Array>({ start(controller) { bodyController = controller; } });
     const { value: response } = await settle(run(fetcher(async () => new Response(upstream))));
+    teardown.push(
+      () => response.body?.cancel().catch(() => {}),
+      () => { try { bodyController.error(new Error("test finished")); } catch { /* already closed */ } },
+    );
     expect(response.status).toBe(200);
     expect(providerRequestPacingStatus(NAME, provider).inFlight).toBe(1);
     bodyController.enqueue(new TextEncoder().encode("ok"));
