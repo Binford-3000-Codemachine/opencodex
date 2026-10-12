@@ -49,74 +49,52 @@ claimedAt` (unchanged stale-read fence) and `percent < 100` for every window in 
 claimable as before but is always retained. Claimed probes already force a fresh dispatch
 (`requiresFreshDispatch`), so a cached or joined older read cannot settle.
 
-## Changes
+## Changes (as implemented)
 
-1. `src/oauth/anthropic-routing.ts`: `AnthropicAccountCooldownError` gains `usageLimitResetsAt: number | null` and a usage-limit message
-   that names the provider and the ISO reset. New instance method `anthropicPoolCooldownError(now, decision, model)` (classification above);
-   `getAnthropicPoolRetryAfterSeconds` delegates to it; `resolveAnthropicDispatchAccountId` throws it. Add
-   `anthropicPoolUsageLimitAfterRefusal(now, decision, model)` returning the error only when no route candidate is eligible and the verdict is
-   a usage limit. Recovery claim/settle widened as above.
-2. `src/bridge/errors.ts`: `formatUsageLimitReachedResponse(message, resetsAtMs, retryAfterSeconds)` building
-   `{error:{message,type:"usage_limit_reached",code:"usage_limit_reached",resets_at}}` + Retry-After.
-3. `src/server/responses/core-errors.ts`: `anthropicPoolCooldownResponse(err, comboAttempt)` — usage limit for direct requests, the existing
-   `rate_limit_error` for combo children (combo failure handling rebuilds the body and `isAnthropicPoolLocalRefusal` deliberately keeps a
-   short target cooldown; a `usage_limit_reached` code would stretch it to the 10-minute exhaustion fallback).
-4. Use it at the four sites; at the final non-combo upstream 429 in `adapter-dispatch.ts` answer the usage limit only when
-   `anthropicPoolUsageLimitAfterRefusal` proves it. Set `logCtx.errorCode = "usage_limit_reached"` where the usage limit is answered.
-5. Native Messages keeps Anthropic `rate_limit_error`; its message now carries the usage-limit wording automatically.
-6. `src/providers/anthropic-reset-admission.ts` comment, `structure/providers/anthropic-account-pool.md` (classified 429 admission +
-   recovery), `structure/transports/responses-failover.md` local-cooldown sentence, docs-site providers guide if it states the old rule.
+1. `src/oauth/anthropic-routing.ts`: `AnthropicAccountCooldownError` gains `usageLimit: { resetsAt: number | null } | null` and
+   `retryableMessage`; its message names the usage limit and, when known, the ISO reset. 429 health entries record `quotaResetAt`
+   via `rejectedWindowsResetAt` (only when every rejected window carries a reset). `anthropicAccountHold` returns the admission winner
+   plus the account's quota reset computed over all quota holds. `anthropicPoolCooldownError(now, decision, model)` builds the refusal;
+   `getAnthropicPoolRetryAfterSeconds` delegates to it; `resolveAnthropicDispatchAccountId` throws it.
+   `anthropicPoolUsageLimitAfterRefusal` returns it only for a usage limit. Recovery claim/settle widened as above.
+2. `src/oauth/anthropic-model-quota.ts`: `anthropicFamilyHoldState` (revalidating flag and family window reset).
+3. `src/bridge/errors.ts`: `formatUsageLimitReachedResponse(message, resetsAtMs | null, retryAfterSeconds)`.
+4. `src/server/responses/core-errors.ts`: `anthropicPoolCooldownResponse(refusal, { comboAttempt, logCtx })` — usage limit for direct
+   requests (sets `logCtx.errorCode`), the old `rate_limit_error` body and wording for combo children.
+5. Sites: `request-transport.ts` pool-enabled `all-cooled` refusal; both `AnthropicAccountCooldownError` catches in
+   `adapter-dispatch.ts`; the passthrough catch; the final non-combo upstream 429 in `adapter-dispatch.ts`; the first-iteration 429 of a
+   routed web-search loop in `sidecar-execution.ts`.
+6. Native Messages keeps Anthropic `rate_limit_error`; its message carries the usage-limit wording.
+7. Docs: `src/providers/anthropic-reset-admission.ts` comment, `structure/providers/anthropic-account-pool.md` (new section),
+   `structure/transports/responses-failover.md`, docs-site `reference/configuration/providers.md`.
 
-## Out of scope
+## Boundaries (unchanged identity)
 
-Codex-account cooldown path (`src/codex/auth-context.ts`); dashboard reason label for retry-after quota cooldowns
-(`src/oauth/health.ts:224`); combo final-error identity (`core-combo-failure.ts:109`); #6962 API-key billing pool (different file set).
+Image bridge terminal, opt-in empty-completion continuation, Chat Completions translation, combo final-error identity
+(`core-combo-failure.ts`), Codex-account cooldown path (`src/codex/auth-context.ts`), dashboard reason label for retry-after quota
+cooldowns (`src/oauth/health.ts:224`). #6962 shares `adapter-dispatch.ts`, `request-transport.ts` and `messages-native.ts` but not the
+edited statements; rerun billing tests on the union once it lands.
 
-## Tests (new file tests/oauth/anthropic-pool-quota-exhaustion.test.ts)
+## Tests
 
-- all accounts 429 quota-held (reset-derived and retry-after sources) -> error has usageLimitResetsAt = earliest; HTTP builder yields
-  `usage_limit_reached`, integer `resets_at`, Retry-After.
-- one account transient-paused, or a 403 cooldown, or busy family -> rate-limit classification.
-- server-level: pool-enabled Responses request with all accounts quota-held -> 429 `usage_limit_reached`; combo child keeps
-  `rate_limit_exceeded`; first exhausted upstream 429 with no replacement -> `usage_limit_reached`.
-- #6989: retry-after quota cooldown cleared by fresh read with headroom; retained when one rejected window still 100; superseded by a stale
-  read (updatedAt < claimedAt); 403 and no-window 429 not claimed; default-source quota cooldown claimable.
-- no account id or token in error bodies or warn logs.
+- `tests/adapters/anthropic/anthropic-pool-usage-limit.test.ts` (12): quota-held pool answers `usage_limit_reached` with `resets_at`
+  (pool on and off); unequal Retry-After/reset; unknown reset omits `resets_at`; partial reset headers; reset independent of admission
+  winner; transient throttle and 403 keep `rate_limit_exceeded`; last upstream refusal answers the usage limit; throttled sibling keeps
+  the provider rate limit; family quota vs revalidation; routed web-search loop; combo child body byte-identical; no account material
+  in bodies or warn logs.
+- `tests/adapters/anthropic/anthropic-quota-cooldown-recovery.test.ts` (11): Retry-After quota cooldown lifted by a fresh read (both
+  instances); partial window retained; stale and superseded claims; default-source recovery; 403 and windowless never claimed;
+  aggregate reset-derived retained; read started before a refusal cannot lift it; instance isolation; tie with a transient pause.
+- Updated: `anthropic-cooldown-recovery.test.ts` (named-window Retry-After/default now clear; windowless/403 do not),
+  `anthropic-model-routes.test.ts` (helper-named spent window answers `usage_limit_reached`).
 
 ## Verification
 
-`bun run typecheck`, focused files above plus existing `tests/oauth/oauth-anthropic-instance-health.test.ts`,
-`tests/adapters/anthropic/anthropic-instance-quota.test.ts`, `tests/adapters/anthropic/anthropic-instance-pool-parity.test.ts`,
-`tests/routing/always-on-429-failover.test.ts`, `tests/adapters/anthropic/anthropic-429-policy.test.ts`, `bun run test:changed`,
-`bun run structure:check`, `bun run privacy:scan`, `git diff --check`.
+`bun run typecheck`, `bun test --isolate` over `tests/adapters/anthropic/`, `tests/oauth/`, layout/lab/core-module/reset-grant files,
+`bun run test:changed`, `bun run structure:check`, `bun run privacy:scan`, `git diff --check`.
 
-## Audit r1 (Sol, FAIL) resolution
+## Independent audit (GPT-6.1-Sol, builder Claude)
 
-1. Major, reset vs admission deadline — folded. 429 entries record `quotaResetAt` from the reset headers even when
-   Retry-After set the deadline; family holds report the family window reset. `resets_at` is the earliest known reset and is
-   omitted when any held account's reset is unknown; Retry-After stays the admission deadline. Busy-family uses a new accessor
-   `anthropicFamilyHoldState`. Tests: unequal Retry-After/reset, missing reset, family.
-
-## Audit r2 (Sol, FAIL) resolution
-
-1. Partial reset headers — folded: `rejectedWindowsResetAt` requires a usable reset for every rejected window. Test added.
-2. Reset vs admission winner — folded: `anthropicAccountHold` computes the quota reset over all quota holds independently of which
-   hold wins admission. Test: shared Retry-After 10 min/reset 3 h plus family 30 min/reset 1 h reports 3 h.
-3. Web-search sidecar — folded: `sidecar-execution.ts` replaces the loop's first-iteration 429 with the usage limit when
-   `anthropicPoolUsageLimitAfterRefusal` proves exhaustion (non-combo). Server test fails without the hook. Image bridge,
-   empty-completion continuation and Chat Completions remain documented boundaries.
-4. Existing `anthropic-cooldown-recovery.test.ts` expectation — updated to the #6989 contract, with negative cases for windowless
-   Retry-After and 403.
-5. Plan text — reconciled above.
-2. Minor, race coverage — added a read that starts before a Retry-After refusal and completes after it (stays cooled), stale
-   claim, newer-refusal generation; existing credential-replacement and uncovered-reset tests continue to run.
-3. Major, other surfaces — rebutted as scope: web-search/image sidecar terminals (only with an Anthropic sidecar backend), opt-in
-   empty-completion continuations and Chat Completions translation are not the Codex Responses main path the issue reports.
-   They keep today's rate-limit identity; documented as a boundary in structure and the PR. Compaction and WebSocket forward the
-   response unchanged (`compact.ts:1486`, `ws-bridge.ts:369`).
-4. Major, combo prose — folded. Combo children get `retryableMessage`, byte-identical to the old body; test asserts equality.
-5. Minor, hook guards — the verdict requires no eligible route candidate (fallback expansion via `routeCandidates`), 429,
-   non-combo, OAuth Anthropic instance; tests cover a throttled sibling, both instances and a model-scoped family.
-6. Minor, #6962 overlap — the shared files are adapter-dispatch.ts, request-transport.ts (imports only here) and passthrough-dispatch;
-   billing recovery is untouched. After rebase, run the billing send-budget/boundary tests if #6962 has landed.
-7. Minor, tests/docs — layout tables registered; docs-site providers reference and two structure docs updated.
+- r1 FAIL: reset vs admission deadline, combo prose, race tests, surfaces, docs — folded except image/continuation/Chat (boundary).
+- r2 FAIL: partial reset headers, reset vs admission winner, routed web-search terminal, stale test expectation, plan text — all folded.
+- r3 NEAR-PASS: no runtime defect; low finding on this document's stale text, fixed here.
