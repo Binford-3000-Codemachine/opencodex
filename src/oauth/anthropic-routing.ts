@@ -193,6 +193,32 @@ function parseRateLimitReset(
   return { delayMs: latest - now, rejectedQuotaWindows };
 }
 
+/**
+ * When every window a refusal reported as rejected reopens, per upstream's reset headers; undefined
+ * unless each rejected window carries a usable reset. Unlike `parseRateLimitReset`, which picks the
+ * best available admission deadline, this is reported to the client as the usage-limit reset, so a
+ * weekly window with no reset cannot hide behind a five-hour one that has one.
+ */
+function rejectedWindowsResetAt(headers: AnthropicRateLimitHeaders | null | undefined, now: number): number | undefined {
+  if (!headers) return undefined;
+  const usableReset = (header: string): number | undefined => {
+    const resetAt = Number(headers.get(header)?.trim()) * 1000;
+    return Number.isFinite(resetAt) && delayUntil(resetAt, now) !== undefined ? resetAt : undefined;
+  };
+  const rejected = rejectedQuotaWindowsIn(headers);
+  if (!rejected.length) {
+    return headers.get("anthropic-ratelimit-unified-status")?.trim() === "rejected"
+      ? usableReset("anthropic-ratelimit-unified-reset") : undefined;
+  }
+  let latest = 0;
+  for (const window of rejected) {
+    const resetAt = usableReset(`anthropic-ratelimit-unified-${window === "five-hour" ? "5h" : "7d"}-reset`);
+    if (resetAt === undefined) return undefined;
+    latest = Math.max(latest, resetAt);
+  }
+  return latest;
+}
+
 interface ScoredAccount {
   accountId: string;
   hasKnownUsage: boolean;
@@ -706,22 +732,34 @@ function createAnthropicRouting(instance: AnthropicInstanceId): AnthropicRouting
    * deadline source; a 403 entry is an entitlement refusal; an admission pause is a transient
    * throttle; a family exclusion is a spent family window unless a revalidation send is already
    * in flight. A tie goes to the transient hold, because then a retry at that instant may succeed.
-   * A quota hold carries the upstream window reset when one is known; its admission deadline may
-   * be Retry-After, the sixty-second default or the thirty-minute family evidence lifetime instead.
+   *
+   * The reported reset is computed apart from that admission order: the account's usage reopens
+   * when the last of its quota holds' upstream windows resets, and it is unknown when any of them
+   * lacks a known reset. Admission deadlines are not resets: they may be Retry-After, the
+   * sixty-second default or the thirty-minute family evidence lifetime.
    */
   function anthropicAccountHold(accountId: string, now: number, model?: string): AnthropicAccountHold | null {
-    let hold: AnthropicAccountHold | null = null;
-    const consider = (until: number | undefined, quota: boolean, resetAt?: number) => {
+    const latest = { until: 0, quota: false };
+    let quotaResetAt = 0;
+    let quotaResetKnown = true;
+    const consider = (until: number | undefined, quota: boolean, reset?: number) => {
       if (until === undefined || until <= now) return;
-      if (hold && (until < hold.until || (until === hold.until && quota))) return;
-      hold = { until, quota, ...(quota && resetAt !== undefined && resetAt > now ? { resetAt } : {}) };
+      if (quota) {
+        if (reset === undefined || reset <= now) quotaResetKnown = false;
+        else quotaResetAt = Math.max(quotaResetAt, reset);
+      }
+      if (until < latest.until || (until === latest.until && quota)) return;
+      latest.until = until;
+      latest.quota = quota;
     };
     const entry = getAnthropicAccountHealthSnapshot(accountId, now) ? upstreamHealth.get(accountId) : undefined;
     consider(entry?.cooldownUntil, entry?.refusalStatus === 429, entry?.quotaResetAt);
     consider(anthropicRatePauseUntil(accountId, now), false);
     const family = anthropicFamilyHoldState(accountId, model);
     consider(anthropicFamilyRetryAt(accountId, model, now), family?.revalidating === false, family?.resetAt);
-    return hold;
+    if (latest.until === 0) return null;
+    return { until: latest.until, quota: latest.quota,
+      ...(latest.quota && quotaResetKnown && quotaResetAt > 0 ? { resetAt: quotaResetAt } : {}) };
   }
 
   /**
@@ -1231,7 +1269,7 @@ function createAnthropicRouting(instance: AnthropicInstanceId): AnthropicRouting
     // account is back in the rotation a minute later.
     const parsedRetry = parseRetryAfterMs(retryAfterHeader, now);
     const resetDerived = status === 429 && parsedRetry === undefined ? parseRateLimitReset(rateLimitHeaders, now) : undefined;
-    const windowReset = status === 429 ? resetDerived ?? parseRateLimitReset(rateLimitHeaders, now) : undefined;
+    const quotaResetAt = status === 429 ? rejectedWindowsResetAt(rateLimitHeaders, now) : undefined;
     const cooldownMs = parsedRetry ?? resetDerived?.delayMs ?? (status === 403 ? ACCOUNT_REFUSAL_COOLDOWN_MS : DEFAULT_COOLDOWN_MS);
     const cooldownGeneration = noteAnthropicCooldownMutation(failedAccountId);
     upstreamHealth.set(failedAccountId, {
@@ -1244,7 +1282,7 @@ function createAnthropicRouting(instance: AnthropicInstanceId): AnthropicRouting
       recordedAt: now,
       refusalStatus: status,
       refusedQuotaWindows: status === 429 ? rejectedQuotaWindowsIn(rateLimitHeaders) : [],
-      ...(windowReset ? { quotaResetAt: now + windowReset.delayMs } : {}),
+      ...(quotaResetAt !== undefined ? { quotaResetAt } : {}),
     });
     sweepExpiredOnWrite(now);
     clearAnthropicSessionAffinityForAccount(failedAccountId);

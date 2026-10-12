@@ -367,9 +367,11 @@ entry is spent quota whatever its deadline source (only a shared-quota classific
 a 403 entry is an entitlement refusal, an admission pause is a transient throttle, and a family
 exclusion is spent quota unless its revalidation send is in flight. Ties go to the transient hold.
 The refusal carries `usageLimit` only when no route candidate is eligible and every held account is
-on spent quota. Its `resetsAt` is the earliest upstream window reset, recorded from the reset
-headers even when Retry-After set the deadline (`quotaResetAt`) or from the family window, and is
-null when any held account's reset is unknown. Retry-After remains the admission deadline.
+on spent quota. Its `resetsAt` is computed apart from admission order: an account reopens when the
+last of its quota holds' upstream windows resets (`quotaResetAt`, recorded only when every rejected
+window carried a reset, even when Retry-After set the deadline; or the family window reset), and the
+pool reports the earliest such account. It is null when any held account's reset is unknown.
+Retry-After remains the admission deadline.
 
 `anthropicPoolCooldownResponse` in `src/server/responses/core-errors.ts` answers a usage limit with
 `formatUsageLimitReachedResponse` (`src/bridge/errors.ts`): 429, `usage_limit_reached` type and
@@ -377,11 +379,12 @@ code, optional `resets_at` in epoch seconds, no `plan_type`, Retry-After, and th
 `usage_limit_reached` request-log code. Codex treats that class as final. The local sites are the
 pool-enabled selection refusal in `request-transport.ts`, both `AnthropicAccountCooldownError`
 catches in `adapter-dispatch.ts` and the passthrough catch; the final non-combo upstream 429 in
-`adapter-dispatch.ts` uses `anthropicPoolUsageLimitAfterRefusal` after recovery found no replacement.
+`adapter-dispatch.ts` and the first-iteration 429 of a routed web-search loop in `sidecar-execution.ts`
+use `anthropicPoolUsageLimitAfterRefusal` after recovery found no replacement.
 Combo children keep the earlier `rate_limit_error` body and wording, so combo hop and target-cooldown
-classification are unchanged. Native Messages keeps Anthropic's `rate_limit_error` type. Web-search
-and image sidecar terminals, opt-in empty-completion continuations and Chat Completions translation
-keep their existing rate-limit identity.
+classification are unchanged. Native Messages keeps Anthropic's `rate_limit_error` type. The image
+bridge terminal, opt-in empty-completion continuations and Chat Completions translation keep their
+existing rate-limit identity.
 
 `captureAnthropicCooldownRecovery` claims any live 429 refusal that named a rejected window, plus a
 reset-derived aggregate refusal, regardless of deadline source. Settlement still requires the

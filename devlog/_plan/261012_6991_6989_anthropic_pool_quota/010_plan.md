@@ -35,16 +35,18 @@ pauses and family-only rejections become family evidence. For each account the p
 | family exclusion, revalidation in flight (busy) | now + 1 s | no |
 
 The account is quota-held when its latest block is a quota block (ties favor transient). The pool answers `usage_limit_reached` only when
-at least one account is blocked and every blocked account is quota-held; `resets_at` is the earliest blocked account's `until` in
-epoch seconds (the time the pool can admit again, the same instant as Retry-After). Anything else keeps today's
-`rate_limit_error` / `rate_limit_exceeded` with Retry-After.
+no route candidate is eligible and every blocked account is quota-held. `resets_at` (epoch seconds) is computed apart from the
+admission order: per account, the latest upstream window reset over all its quota holds (unknown if any rejected window lacks a
+reset header or a family has no reset), then the earliest across accounts, omitted when any held account is unknown. Retry-After
+stays the admission deadline. Anything else keeps today's `rate_limit_error` / `rate_limit_exceeded` with Retry-After.
 
 ## Recovery rule (#6989)
 
 A cooldown is claimable by a fresh usage read when it is live, `refusalStatus === 429`, and either source is `reset-derived` (unchanged) or
 the refusal named at least one rejected window (`refusedQuotaWindows`). Settlement requires the same generation, `quota.updatedAt >=
 claimedAt` (unchanged stale-read fence) and `percent < 100` for every window in `rejectedQuotaWindows` if present, else
-`refusedQuotaWindows`. 403 refusals and 429s naming no window are never claimed. Claimed probes already force a fresh dispatch
+`refusedQuotaWindows`. 403 refusals and windowless non-reset-derived 429s are never claimed; a reset-derived aggregate refusal stays
+claimable as before but is always retained. Claimed probes already force a fresh dispatch
 (`requiresFreshDispatch`), so a cached or joined older read cannot settle.
 
 ## Changes
@@ -94,6 +96,18 @@ Codex-account cooldown path (`src/codex/auth-context.ts`); dashboard reason labe
    Retry-After set the deadline; family holds report the family window reset. `resets_at` is the earliest known reset and is
    omitted when any held account's reset is unknown; Retry-After stays the admission deadline. Busy-family uses a new accessor
    `anthropicFamilyHoldState`. Tests: unequal Retry-After/reset, missing reset, family.
+
+## Audit r2 (Sol, FAIL) resolution
+
+1. Partial reset headers — folded: `rejectedWindowsResetAt` requires a usable reset for every rejected window. Test added.
+2. Reset vs admission winner — folded: `anthropicAccountHold` computes the quota reset over all quota holds independently of which
+   hold wins admission. Test: shared Retry-After 10 min/reset 3 h plus family 30 min/reset 1 h reports 3 h.
+3. Web-search sidecar — folded: `sidecar-execution.ts` replaces the loop's first-iteration 429 with the usage limit when
+   `anthropicPoolUsageLimitAfterRefusal` proves exhaustion (non-combo). Server test fails without the hook. Image bridge,
+   empty-completion continuation and Chat Completions remain documented boundaries.
+4. Existing `anthropic-cooldown-recovery.test.ts` expectation — updated to the #6989 contract, with negative cases for windowless
+   Retry-After and 403.
+5. Plan text — reconciled above.
 2. Minor, race coverage — added a read that starts before a Retry-After refusal and completes after it (stays cooled), stale
    claim, newer-refusal generation; existing credential-replacement and uncovered-reset tests continue to run.
 3. Major, other surfaces — rebutted as scope: web-search/image sidecar terminals (only with an Anthropic sidecar backend), opt-in

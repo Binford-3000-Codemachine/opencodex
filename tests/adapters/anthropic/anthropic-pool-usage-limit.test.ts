@@ -103,10 +103,10 @@ function configFor(poolEnabled: boolean, reply: () => Response = () => { throw n
   return { port: 0, defaultProvider: "anthropic", anthropicAccountPool: { enabled: poolEnabled }, providers: { anthropic: provider } };
 }
 
-function post(config: OcxConfig) {
+function post(config: OcxConfig, body: Record<string, unknown> = {}) {
   return handleResponses(new Request("http://localhost/v1/responses", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "anthropic/claude-sonnet-4-5", input: "Answer briefly", stream: false }),
+    body: JSON.stringify({ model: "anthropic/claude-sonnet-4-5", input: "Answer briefly", stream: false, ...body }),
   }), config, { model: "", provider: "" });
 }
 
@@ -179,6 +179,58 @@ test("resets_at is the upstream window reset, and is omitted when any held accou
   expect(error).not.toHaveProperty("resets_at");
   expect(String(error.message)).not.toContain("resets at");
   expect(response.headers.get("retry-after")).not.toBeNull();
+});
+
+test("a rejected window without its own reset leaves the pool reset unknown", async () => {
+  const ids = await seed(2);
+  const config = configFor(true);
+  const now = Date.now();
+  // Both windows rejected, only the five-hour one dated: the weekly window could hold far longer.
+  for (const id of ids) {
+    expect(recordAnthropicAccount429(config, id, "600", now, new Headers({
+      "anthropic-ratelimit-unified-5h-status": "rejected",
+      "anthropic-ratelimit-unified-5h-reset": String(Math.ceil(now / 1000) + 600),
+      "anthropic-ratelimit-unified-7d-status": "rejected",
+    }))).toBe(true);
+  }
+  const error = await errorOf(await post(config));
+  expect(error).toMatchObject({ type: "usage_limit_reached" });
+  expect(error).not.toHaveProperty("resets_at");
+});
+
+test("the reported reset is the last quota window to reopen, not the admission deadline that wins", async () => {
+  const ids = await seed(2);
+  const config = configFor(true);
+  const now = Date.now();
+  const second = Math.ceil(now / 1000) * 1000;
+  // Shared quota: Retry-After ten minutes, window reset three hours. Family evidence expires for
+  // admission in thirty minutes, its window resets in one hour. Admission waits on the family;
+  // usage reopens only when the shared window does.
+  holdOnQuota(config, ids[0]!, 600, now, 3 * 3600);
+  observeAnthropicFamilyQuota(ids[0]!, [{ label: "Fable", scope: "model", percent: 100, rejected: true, resetAt: second + 60 * MINUTE }], now, true);
+  holdOnQuota(config, ids[1]!, 600, now, 4 * 3600);
+  const refusal = anthropicPoolCooldownError(now, null, "claude-fable-5");
+  expect(refusal.usageLimit).toEqual({ resetsAt: second + 3 * 60 * MINUTE });
+  expect(refusal.retryAfterSeconds).toBe(600);
+});
+
+test("a routed web-search turn whose last account refuses on spent quota answers the usage limit", async () => {
+  const ids = await seed(2);
+  const config = configFor(true, () => spent("5h", 1800));
+  config.webSearchSidecar = { backend: "anthropic", enabled: true };
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const response = await post(config, { tools: [{ type: "web_search" }] });
+    const text = await response.clone().text();
+    const error = await errorOf(response);
+    expect(sent).toHaveLength(2);
+    expect(response.status).toBe(429);
+    expect(error).toMatchObject({ type: "usage_limit_reached", code: "usage_limit_reached" });
+    expect(Math.abs(Number(error.resets_at) - (Math.floor(Date.now() / 1000) + 1800))).toBeLessThanOrEqual(2);
+    expectNoAccountMaterial(text, ids);
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 test.each(["transient throttle", "entitlement 403"] as const)("one %s among quota holds keeps the retryable rate limit", async kind => {
