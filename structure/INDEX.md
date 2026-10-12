@@ -122,6 +122,7 @@ A source area can be described by more than one doc, because these docs are orga
 | `desktop/src-tauri/src/cli_command_posix.rs` | [`desktop-terminal-command.md`](desktop-terminal-command.md) |
 | `desktop/src-tauri/src/cli_command_record.rs` | [`desktop-terminal-command.md`](desktop-terminal-command.md) |
 | `desktop/src-tauri/src/cli_command_windows.rs` | [`desktop-terminal-command.md`](desktop-terminal-command.md) |
+| `desktop/src-tauri/src/first_run.rs` | [`desktop-start-at-login.md`](desktop-start-at-login.md) |
 | `desktop/src-tauri/src/login_registration.rs` | [`desktop-start-at-login.md`](desktop-start-at-login.md) |
 | `desktop/src-tauri/src/tray_login.rs` | [`desktop-start-at-login.md`](desktop-start-at-login.md) |
 | `desktop/ui/cli.html` | [`desktop-terminal-command.md`](desktop-terminal-command.md) |
@@ -184,6 +185,7 @@ A source area can be described by more than one doc, because these docs are orga
 | `src/service-manager-probe.ts` | [`ops/service-and-sidecars.md`](ops/service-and-sidecars.md) |
 | `src/service.ts` | [`runtime.md`](runtime.md)<br>[`ops/docs-and-release.md`](ops/docs-and-release.md) |
 | `src/service/` | [`runtime.md`](runtime.md) |
+| `src/service/desktop-startup.ts` | [`desktop-start-at-login.md`](desktop-start-at-login.md) |
 | `src/service/health-sentinel-launch.ts` | [`ops/service-health-recovery.md`](ops/service-health-recovery.md) |
 | `src/service/health-sentinel-main.ts` | [`ops/service-health-recovery.md`](ops/service-health-recovery.md) |
 | `src/service/health-sentinel-policy.ts` | [`ops/service-health-recovery.md`](ops/service-health-recovery.md) |

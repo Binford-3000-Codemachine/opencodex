@@ -27,7 +27,8 @@ handler restores the shown state and disables the item until its own answer; ref
 meanwhile are dropped. The probe and the action are not atomic across processes: another copy
 rewriting the plist in the milliseconds between them is a known limit.
 
-The macOS launch-origin migration is narrower than on other platforms. The marker sits in a
-config directory every copy shares, and the plugin rewrites the whole plist, so
-`login_registration::migration` allows the rewrite only for this copy's entry carrying exactly
-the three keys the plugin writes. Anything else is left untouched and unmarked.
+The macOS launch-origin migration in `desktop/src-tauri/src/first_run.rs` is narrower than on
+other platforms. The marker sits in a config directory every copy shares, and the plugin
+rewrites the whole plist, so `login_registration::migration` allows the rewrite only for this
+copy's entry carrying exactly the three keys the plugin writes and not replaced while it was
+read. Anything else is left untouched and unmarked.
