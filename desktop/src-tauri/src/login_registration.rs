@@ -441,6 +441,164 @@ pub fn migration(probe: &dyn Probe, home: &Path, current_app: &Path) -> Migratio
     }
 }
 
+/// Running launchctl and plutil with a deadline, without ever killing a process.
+///
+/// The shell never kills a process (`tests/clients/desktop-exit-ownership.test.ts`), so a
+/// command that outlives its deadline is abandoned: the caller gets [`RunError::Failed`] at the
+/// deadline and a detached thread reaps the child and its output readers later. One process-wide
+/// slot is held until all three have finished, and no command starts while it is held, so a
+/// launchd that never answers costs at most one abandoned command however often the tray asks.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod command {
+    use super::{js_trim, RunError};
+    use std::io::Read;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{channel, Receiver};
+    use std::thread::JoinHandle;
+    use std::time::{Duration, Instant};
+
+    const MAX_OUTPUT: u64 = 128 * 1024;
+    static BUSY: AtomicBool = AtomicBool::new(false);
+
+    /// Occupancy of the one command slot; released when dropped.
+    struct Slot;
+
+    impl Slot {
+        fn take() -> Option<Self> {
+            BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .ok()
+                .map(|_| Self)
+        }
+    }
+
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            BUSY.store(false, Ordering::Release);
+        }
+    }
+
+    type Reader = (Receiver<Vec<u8>>, JoinHandle<()>);
+
+    fn drain(stream: Option<impl Read + Send + 'static>) -> Reader {
+        let (sender, receiver) = channel();
+        let handle = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(stream) = stream {
+                let _ = stream.take(MAX_OUTPUT + 1).read_to_end(&mut bytes);
+            }
+            let _ = sender.send(bytes);
+        });
+        (receiver, handle)
+    }
+
+    /// Hand the slot to a thread that waits for the child and both readers, then frees it.
+    fn abandon(slot: Slot, mut child: Child, readers: [Reader; 2]) -> RunError {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            for (_, handle) in readers {
+                let _ = handle.join();
+            }
+            drop(slot);
+        });
+        RunError::Failed
+    }
+
+    pub(super) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, RunError> {
+        let slot = Slot::take().ok_or(RunError::Failed)?;
+        let deadline = Instant::now() + timeout;
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| RunError::Failed)?;
+        let readers = [drain(child.stdout.take()), drain(child.stderr.take())];
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                _ => return Err(abandon(slot, child, readers)),
+            }
+        };
+        let mut output = Vec::new();
+        for (receiver, _) in &readers {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match receiver.recv_timeout(left) {
+                Ok(bytes) => output.push(bytes),
+                Err(_) => return Err(abandon(slot, child, readers)),
+            }
+        }
+        for (_, handle) in readers {
+            let _ = handle.join();
+        }
+        drop(slot);
+        let [stdout, stderr] = [&output[0], &output[1]];
+        if stdout.len() as u64 > MAX_OUTPUT || stderr.len() as u64 > MAX_OUTPUT {
+            return Err(RunError::Failed);
+        }
+        // Node decodes `encoding: "utf8"` output lossily; so does this.
+        if status.success() {
+            return Ok(js_trim(&String::from_utf8_lossy(stdout)).to_string());
+        }
+        match status.code() {
+            Some(status) => Err(RunError::Exit {
+                status,
+                stderr: String::from_utf8_lossy(stderr).into_owned(),
+            }),
+            None => Err(RunError::Failed),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_command_past_its_deadline_holds_the_only_slot_until_it_ends() {
+            let started = Instant::now();
+            assert_eq!(
+                run("/bin/sleep", &["1"], Duration::from_millis(50)),
+                Err(RunError::Failed)
+            );
+            assert!(started.elapsed() < Duration::from_millis(500));
+            // Repeated timeouts cannot add work: nothing runs while the abandoned command lives.
+            for _ in 0..20 {
+                assert_eq!(
+                    run("/bin/echo", &["ready"], Duration::from_secs(5)),
+                    Err(RunError::Failed)
+                );
+            }
+            let freed = Instant::now() + Duration::from_secs(10);
+            while BUSY.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() < freed,
+                    "the abandoned command was never reaped"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(
+                run("/bin/echo", &["ready"], Duration::from_secs(5)),
+                Ok("ready".into())
+            );
+            assert_eq!(
+                run(
+                    "/bin/sh",
+                    &["-c", "echo nope >&2; exit 113"],
+                    Duration::from_secs(5)
+                ),
+                Err(RunError::Exit {
+                    status: 113,
+                    stderr: "nope\n".into()
+                })
+            );
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub use system::{judge, judge_migration};
 
@@ -448,15 +606,13 @@ pub use system::{judge, judge_migration};
 mod system {
     use super::*;
     use std::ffi::CString;
-    use std::io::Read;
     use std::os::raw::c_char;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
+    /// TypeScript's `run` deadline in `desktop-startup.ts`.
     const TIMEOUT: Duration = Duration::from_millis(750);
-    const MAX_OUTPUT: u64 = 128 * 1024;
     const X_OK: i32 = 1;
 
     unsafe extern "C" {
@@ -498,76 +654,7 @@ mod system {
         }
 
         fn run(&self, program: &str, args: &[&str]) -> Result<String, RunError> {
-            let mut child = Command::new(program)
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|_| RunError::Failed)?;
-            // Output collection shares the command's deadline: a reader still blocked when it
-            // passes is abandoned, never joined.
-            let drain = |stream: Option<Box<dyn Read + Send>>| {
-                let (sender, receiver) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let mut bytes = Vec::new();
-                    if let Some(stream) = stream {
-                        let _ = stream.take(MAX_OUTPUT + 1).read_to_end(&mut bytes);
-                    }
-                    let _ = sender.send(bytes);
-                });
-                receiver
-            };
-            let stdout = drain(
-                child
-                    .stdout
-                    .take()
-                    .map(|s| Box::new(s) as Box<dyn Read + Send>),
-            );
-            let stderr = drain(
-                child
-                    .stderr
-                    .take()
-                    .map(|s| Box::new(s) as Box<dyn Read + Send>),
-            );
-            let deadline = Instant::now() + TIMEOUT;
-            let status = loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => break status,
-                    Ok(None) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(5))
-                    }
-                    _ => {
-                        // The shell never kills a process (tests/clients/desktop-exit-ownership).
-                        // A late launchctl or plutil is abandoned and reaped when it ends; the
-                        // probe has already answered unverified.
-                        std::thread::spawn(move || {
-                            let _ = child.wait();
-                        });
-                        return Err(RunError::Failed);
-                    }
-                }
-            };
-            let collect = |receiver: std::sync::mpsc::Receiver<Vec<u8>>| {
-                let left = deadline.saturating_duration_since(Instant::now());
-                receiver.recv_timeout(left).map_err(|_| RunError::Failed)
-            };
-            let stdout = collect(stdout)?;
-            let stderr = collect(stderr)?;
-            if stdout.len() as u64 > MAX_OUTPUT || stderr.len() as u64 > MAX_OUTPUT {
-                return Err(RunError::Failed);
-            }
-            // Node decodes `encoding: "utf8"` output lossily; so does this.
-            if status.success() {
-                return Ok(js_trim(&String::from_utf8_lossy(&stdout)).to_string());
-            }
-            match status.code() {
-                Some(status) => Err(RunError::Exit {
-                    status,
-                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
-                }),
-                None => Err(RunError::Failed),
-            }
+            command::run(program, args, TIMEOUT)
         }
     }
 
