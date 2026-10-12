@@ -41,8 +41,16 @@ export function withLockClaim<T>(
     if (error instanceof LockFileBusy) return { ok: false };
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-  if (!safeNamespace(directory, "directory", deps)) throw new UnsafeLockNamespace(directory);
-  const parents = [root, { path: directory, stat: io(() => deps.lstat(directory)) }];
+  // A peer's cleanup removes the empty claims directory, so it can vanish between our mkdir and
+  // these reads. That is contention, not an unsafe namespace and not a crash: report it as busy.
+  if (!safeNamespace(directory, "directory", deps, true)) throw new UnsafeLockNamespace(directory);
+  let directoryStat: ReturnType<OwnerDeps["lstat"]>;
+  try { directoryStat = io(() => deps.lstat(directory)); }
+  catch (error) {
+    if (error instanceof LockFileBusy || (error as NodeJS.ErrnoException).code === "ENOENT") return { ok: false };
+    throw error;
+  }
+  const parents = [root, { path: directory, stat: directoryStat }];
   const claimDirectoryGone = (): boolean => {
     try { const now = deps.lstat(directory); return now.dev !== parents[1].stat.dev || now.ino !== parents[1].stat.ino; }
     catch { return true; }

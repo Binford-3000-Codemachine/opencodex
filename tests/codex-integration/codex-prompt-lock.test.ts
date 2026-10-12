@@ -111,6 +111,22 @@ describe("staleness", () => {
 });
 
 describe("interleavings", () => {
+  // A peer's cleanup rmdirs the empty claims directory; it can vanish between our mkdir and our
+  // reads of it. That is contention: the contender must report "locked", not crash or call it unsafe.
+  for (const read of [1, 2] as const) {
+    test(`a claims directory removed by a peer before read ${read} reports contention`, () => {
+      const path = lockPath(), claims = path + ".claims";
+      let reads = 0;
+      const deps: LockDeps = { ...alive, lstat: target => {
+        if (target === claims && ++reads === read) rmSync(claims, { recursive: true, force: true });
+        return ownerDefaults.lstat(target);
+      } };
+      expect(tryAcquire(path, deps)).toEqual({ ok: false, error: "locked" });
+      expect(existsSync(path)).toBe(false);
+      expect(tryAcquire(path, alive).ok).toBe(true);
+    });
+  }
+
   test("real concurrent contenders admit at most one live owner and leave retries usable", async () => {
     const path = lockPath(), go = path + ".go", stop = path + ".stop";
     writeFileSync(path, JSON.stringify({ ...ownEvidence(ownerDefaults), token: "old", pid: 999999999, acquiredAt: 0 }));
