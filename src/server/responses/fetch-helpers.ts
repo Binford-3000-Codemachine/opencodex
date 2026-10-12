@@ -244,6 +244,12 @@ export interface ProviderFetchOptions {
   beforeDispatch?: (headers: Headers) => void;
   /** One-shot receipt after final local HTTP admission, immediately before executor entry. */
   onPhysicalDispatch?: () => void;
+  /**
+   * Opt-in (#6969): let a Codex WebSocket send hold empty lifecycle frames so an authoritative
+   * upstream refusal before any output settles as a replayable gateway status. Only a caller that
+   * restores the projection afterwards (restoreCodexWsPreOutputRefusal) may set it.
+   */
+  preOutputRefusalHoldMs?: number;
   /** Revalidate/rebuild a queued request at its physical send boundary, after pacing. */
   dispatchOverride?: (input: Parameters<typeof globalThis.fetch>[0], init: RequestInit, execute: typeof globalThis.fetch) => Promise<Response>;
 }
@@ -360,7 +366,7 @@ export function providerFetch(
       const fallback = ((url: Parameters<typeof globalThis.fetch>[0], fallbackInit?: RequestInit) =>
         httpFetch(url, { ...fallbackInit, [WS_FALLBACK_RECEIPT]: notifyOnce } as RequestInit)) as typeof globalThis.fetch;
       return codexWsUpstreamFetch(input, init, fallback, runtime, options.onCodexWsQuota, options.beforeDispatch, options.nativeControl,
-        async () => { (await waitForPacing(init.signal ?? undefined))?.release(); }, notifyOnce);
+        async () => { (await waitForPacing(init.signal ?? undefined))?.release(); }, notifyOnce, options.preOutputRefusalHoldMs);
     }
     return httpFetch(input, init);
   };

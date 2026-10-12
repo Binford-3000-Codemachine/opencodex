@@ -163,6 +163,8 @@ export async function codexWsUpstreamFetch(
   nativeControl?: NativeResponseControl,
   beforeContinuation?: () => Promise<void>,
   onPhysicalDispatch?: () => void,
+  /** Opt-in pre-output refusal hold (#6969); see codexWsExchange. */
+  preOutputRefusalHoldMs?: number,
 ): Promise<Response> {
   const prepared = prepareCodexWsRequest(url, init);
   if (!prepared) return sseFallback(url, prepareCodexHttpInit(url, init));
@@ -248,6 +250,7 @@ export async function codexWsUpstreamFetch(
     session, url, init, prepared, sseFallback, onQuota, beforeDispatch,
     nativeControl: control,
     beforeContinuation, onPhysicalDispatch,
+    preOutputRefusalHoldMs,
     bunVersion: typeof runtime === "string" ? runtime : runtime.version,
   });
 }
