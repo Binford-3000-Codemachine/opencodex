@@ -359,6 +359,40 @@ Default single-account users acquire no new retry or admission pause.
 
 Regression coverage: `tests/adapters/anthropic/anthropic-429-policy.test.ts`.
 
+## Quota exhaustion answer and fresh-read recovery
+
+`anthropicPoolCooldownError` in `src/oauth/anthropic-routing.ts` builds the local refusal for a
+pool or model route with no admissible account. Per account, the latest hold decides: a 429 health
+entry is spent quota whatever its deadline source (only a shared-quota classification records one),
+a 403 entry is an entitlement refusal, an admission pause is a transient throttle, and a family
+exclusion is spent quota unless its revalidation send is in flight. Ties go to the transient hold.
+The refusal carries `usageLimit` only when no route candidate is eligible and every held account is
+on spent quota. Its `resetsAt` is the earliest upstream window reset, recorded from the reset
+headers even when Retry-After set the deadline (`quotaResetAt`) or from the family window, and is
+null when any held account's reset is unknown. Retry-After remains the admission deadline.
+
+`anthropicPoolCooldownResponse` in `src/server/responses/core-errors.ts` answers a usage limit with
+`formatUsageLimitReachedResponse` (`src/bridge/errors.ts`): 429, `usage_limit_reached` type and
+code, optional `resets_at` in epoch seconds, no `plan_type`, Retry-After, and the
+`usage_limit_reached` request-log code. Codex treats that class as final. The local sites are the
+pool-enabled selection refusal in `request-transport.ts`, both `AnthropicAccountCooldownError`
+catches in `adapter-dispatch.ts` and the passthrough catch; the final non-combo upstream 429 in
+`adapter-dispatch.ts` uses `anthropicPoolUsageLimitAfterRefusal` after recovery found no replacement.
+Combo children keep the earlier `rate_limit_error` body and wording, so combo hop and target-cooldown
+classification are unchanged. Native Messages keeps Anthropic's `rate_limit_error` type. Web-search
+and image sidecar terminals, opt-in empty-completion continuations and Chat Completions translation
+keep their existing rate-limit identity.
+
+`captureAnthropicCooldownRecovery` claims any live 429 refusal that named a rejected window, plus a
+reset-derived aggregate refusal, regardless of deadline source. Settlement still requires the
+claimed generation, a read no older than the claim, and every named window below 100 percent; a
+claim forces a fresh usage dispatch, and a refusal recorded while a read is in flight moves the
+generation so that read settles nothing. Entitlement 403 cooldowns and windowless Retry-After
+refusals are never claimed.
+
+Regression coverage: `tests/adapters/anthropic/anthropic-pool-usage-limit.test.ts` and
+`tests/adapters/anthropic/anthropic-quota-cooldown-recovery.test.ts`.
+
 ## Family weekly admission
 
 `src/providers/quota/anthropic-family-headers.ts` attributes 7d_oi only to fixture-confirmed
