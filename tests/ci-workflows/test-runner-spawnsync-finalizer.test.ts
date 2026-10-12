@@ -31,7 +31,8 @@ const REAP_GRACE_MS = 3_000;
 
 type DriftOutcome =
   | { kind: "settled"; exitCode: number; stdout: string; stderr: string }
-  | { kind: "deadline"; reaped: boolean };
+  | { kind: "deadline"; reaped: boolean }
+  | { kind: "read-error"; error: string; reaped: boolean };
 
 /**
  * Bounded on every path: the deadline kills the child and the case settles after a short reap
@@ -47,17 +48,20 @@ async function runDriftChild(writers: number): Promise<DriftOutcome> {
     // Must be a pipe: a Bun.stderr writer registers a poll only when stderr is pollable.
     stderr: "pipe",
   });
-  const work = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  // Observed either way, so a late rejection after the case has moved on is never unhandled.
-  const settledWork = work.then(() => true, () => true);
+  const work = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    .then(value => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error: String(error) }));
+  const settledWork = work.then(() => true);
   let deadline: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<"deadline">(resolve => { deadline = setTimeout(() => resolve("deadline"), OUTER_DEADLINE_MS); });
+  let readError: string | undefined;
   try {
     const first = await Promise.race([work, expired]);
-    if (first !== "deadline") {
-      const [stdout, stderr, exitCode] = first;
+    if (first !== "deadline" && first.ok) {
+      const [stdout, stderr, exitCode] = first.value;
       return { kind: "settled", exitCode, stdout: stdout.trim(), stderr: stderr.trim().slice(-2_000) };
     }
+    // A pipe read that failed leaves the child unobserved; it gets the same bounded cleanup.
+    if (first !== "deadline") readError = first.error;
   } finally {
     clearTimeout(deadline);
   }
@@ -70,7 +74,7 @@ async function runDriftChild(writers: number): Promise<DriftOutcome> {
   clearTimeout(grace);
   // A child or pipe that outlived its kill must not keep this test process alive either.
   if (!reaped) child.unref();
-  return { kind: "deadline", reaped };
+  return readError === undefined ? { kind: "deadline", reaped } : { kind: "read-error", error: readError, reaped };
 }
 
 describe.skipIf(process.platform === "win32")("test-runner Bun spawnSync after finalizers inside spawnSync", () => {
@@ -81,6 +85,7 @@ describe.skipIf(process.platform === "win32")("test-runner Bun spawnSync after f
       if (result.kind === "deadline") {
         throw new Error(`spawnSync never returned within ${OUTER_DEADLINE_MS} ms (Bun ${Bun.version}): ${report}`);
       }
+      if (result.kind === "read-error") throw new Error(`reading the drift child's output failed: ${report}`);
       expect(result.exitCode, report).toBe(0);
       const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
       expect({
