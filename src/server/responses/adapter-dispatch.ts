@@ -1809,7 +1809,8 @@ export async function prepareAdapterExchange(
       const poolUsageLimit = upstreamResponse.status === 429 && anthropicInstance && route.provider.authMode === "oauth"
         ? anthropicRoutingFor(anthropicInstance).anthropicPoolUsageLimitAfterRefusal(Date.now(), transportState.anthropicRouteDecision, route.modelId)
         : null;
-      if (poolUsageLimit) return anthropicPoolCooldownResponse(poolUsageLimit, { logCtx });
+      // Combo children returned above; the flag is passed anyway so this site states the same rule.
+      if (poolUsageLimit) return anthropicPoolCooldownResponse(poolUsageLimit, { comboAttempt: options.comboAttempt, logCtx });
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
       const upstreamRetryAfter = upstreamResponse.headers.get("retry-after");
