@@ -376,11 +376,17 @@ pub fn migration(probe: &dyn Probe, home: &Path, current_app: &Path) -> Migratio
         .join("Library")
         .join("LaunchAgents")
         .join(format!("{SERVICE}.plist"));
-    match probe.identity(&plist) {
-        Ok(_) => {}
+    let plist_identity = match probe.identity(&plist) {
+        Ok(identity) => identity,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Migration::Absent,
         Err(_) => return Migration::Leave,
-    }
+    };
+    let Ok(registration) = probe.realpath(&plist) else {
+        return Migration::Leave;
+    };
+    let Ok(target_identity) = probe.identity(&registration) else {
+        return Migration::Leave;
+    };
     let Some(plist_arg) = plist.to_str() else {
         return Migration::Leave;
     };
@@ -420,9 +426,18 @@ pub fn migration(probe: &dyn Probe, home: &Path, current_app: &Path) -> Migratio
     if !own_shape {
         return Migration::Leave;
     }
-    match probe.realpath(Path::new(app)) {
-        Ok(app) if app == current_app => Migration::Rewrite,
-        _ => Migration::Leave,
+    let Ok(resolved) = probe.realpath(Path::new(app)) else {
+        return Migration::Leave;
+    };
+    // As in [`classify`]: a plist replaced while it was read is not the plist that was judged.
+    let stable = probe.identity(&plist).ok().as_ref() == Some(&plist_identity)
+        && probe.realpath(&plist).ok().as_ref() == Some(&registration)
+        && probe.identity(&registration).ok().as_ref() == Some(&target_identity)
+        && probe.realpath(Path::new(app)).ok().as_ref() == Some(&resolved);
+    if stable && resolved == current_app {
+        Migration::Rewrite
+    } else {
+        Migration::Leave
     }
 }
 
@@ -911,6 +926,13 @@ mod tests {
         unreadable.plist = None;
         assert_eq!(
             migration(&unreadable, Path::new(HOME), Path::new(APP)),
+            Migration::Leave
+        );
+        // Another copy replacing the plist while it is read leaves it alone.
+        let mut replaced = Fake::new(entry(serde_json::json!({})));
+        replaced.touch = true;
+        assert_eq!(
+            migration(&replaced, Path::new(HOME), Path::new(APP)),
             Migration::Leave
         );
     }

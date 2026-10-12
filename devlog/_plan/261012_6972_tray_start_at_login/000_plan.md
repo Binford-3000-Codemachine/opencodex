@@ -216,3 +216,13 @@ Final state table (supersedes the one above):
    thread; refresh results are dropped while a click is pending; the click job's own result
    decrements the counter and applies.
 
+## Code review round 1 (GPT-6.1-Sol high, commit 4c5fb7734d): FAIL → folded
+
+1. **migration accepted a plist replaced during its own read** — folded: `migration` now
+   captures the plist identity, its resolved target and target identity before `plutil`, and
+   re-reads them plus the registered executable's resolution afterwards; any change is
+   `Leave`. Regression: `migration_rewrites_only_this_copys_own_enabled_entry` replacement
+   case. The reviewer accepted the cross-process rebuttal for the window after a stable final
+   probe.
+2. **structure doc said two actionable states** — folded: three (verified disables, absent
+   enables, launchd-disabled opens Login Items settings).

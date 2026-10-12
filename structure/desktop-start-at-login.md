@@ -15,8 +15,9 @@ The cases in `tests/fixtures/desktop-login-registration-cases.json` run against 
 implementations (`login_registration::tests` and
 `tests/service/service-desktop-login-registration.test.ts`); a change to either judgment
 must change the fixture and pass both. Every other state is unchecked with its reason in the
-label. Only two are actionable: absent registers this copy, and a launchd-disabled job of this
-copy opens Login Items settings, because rewriting the plist cannot clear launchd's override.
+label. Three states are actionable: verified turns Start at Login off, absent registers this
+copy, and a launchd-disabled job of this copy opens Login Items settings, because rewriting the
+plist cannot clear launchd's override.
 Another copy's registration, a registration naming a missing app and unreadable evidence leave
 the item disabled; the tray never rewrites them. `desktop/src-tauri/src/tray_login.rs` probes on
 blocking workers under one mutex (at build, on hover at most every two seconds, every 60
