@@ -538,8 +538,12 @@ mod system {
                         std::thread::sleep(Duration::from_millis(5))
                     }
                     _ => {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        // The shell never kills a process (tests/clients/desktop-exit-ownership).
+                        // A late launchctl or plutil is abandoned and reaped when it ends; the
+                        // probe has already answered unverified.
+                        std::thread::spawn(move || {
+                            let _ = child.wait();
+                        });
                         return Err(RunError::Failed);
                     }
                 }
