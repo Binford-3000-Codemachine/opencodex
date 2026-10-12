@@ -6,6 +6,12 @@
  * ends: the Child's listener and CLI refuse before sending, and the Home's link listener answers
  * 404 for any other path under the prefix. No route here returns a credential value; provider
  * and account projections report presence and masked identities only.
+ *
+ * A link read must not change the Home. The Home runs these reads passively
+ * (`src/lib/passive-read.ts`): model discovery, which reaches provider upstreams and persists the
+ * initial model selection of a pending provider, config writes and diagnostics do not run (#6959).
+ * `tests/server/link-management-relay.test.ts` reads every path here and asserts that the Home
+ * config and its upstreams are untouched.
  */
 export const LINK_MANAGEMENT_PREFIX = "/v1/link-management";
 /** The Home's OpenCodex-owned Codex settings a Child applies when it syncs. */
@@ -31,15 +37,15 @@ export const LINK_MANAGEMENT_READ_PATHS: readonly string[] = [
   "/api/catalog",
   "/api/system/memory",
   "/api/provider-presets",
-  "/api/model-presets",
   "/api/provider-context-caps",
 ];
 const READ_PATHS = new Set(LINK_MANAGEMENT_READ_PATHS);
 /**
  * Query keys that make a read trigger upstream work on the Home: forced refreshes and the
  * per-account quota probes `?quota=1` starts on the OAuth-account and key-pool reads.
- * `/api/models`, `/api/subagent-models` and `/api/subagent-model-fallback` are absent for the
- * same reason: they run live provider discovery and may persist initial model selection.
+ * `/api/models`, `/api/model-presets`, `/api/subagent-models` and `/api/subagent-model-fallback`
+ * are absent for the same reason: they run live provider discovery and may persist initial model
+ * selection. The preset preview exists only to decide a write a Child cannot make.
  */
 const REFRESH_KEYS = ["refresh", "reload", "force", "quota"];
 

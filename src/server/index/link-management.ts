@@ -6,10 +6,12 @@
  * `src/link/management-routes.ts`. The management handler sees a fresh request built here: no
  * caller header, cookie, Origin or credential crosses from the link, and the principal is
  * absent, so no consent- or capability-gated branch can be reached. Only allowlisted reads run.
+ * They run as passive reads (`src/lib/passive-read.ts`): no discovery, config write or diagnostic (#6959).
  */
 import type { OcxConfig } from "../../types";
 import { handleManagementAPI, type ManagementApiDeps } from "../management-api";
 import type { ManagementSessionControl } from "../management-auth";
+import { runPassiveRead } from "../../lib/passive-read";
 import { LINK_CODEX_SETTINGS_PATH, linkManagementRouteAllowed, linkManagementTarget } from "../../link/management-routes";
 import { projectHomeCodexSettings } from "../../link/codex-settings";
 import { packageVersion } from "../../lib/package-version";
@@ -40,7 +42,8 @@ export async function handleLinkManagementRequest(
     method: "GET",
     headers: { accept: "application/json", host: "127.0.0.1" },
   });
-  const response = await handleManagementAPI(inner, local, config, deps, undefined, sessionControl, { trustedLoopback: false });
+  const response = await runPassiveRead(() =>
+    handleManagementAPI(inner, local, config, deps, undefined, sessionControl, { trustedLoopback: false }));
   if (!response) return notFound();
   const headers = new Headers({ "cache-control": "no-store" });
   for (const name of KEPT_RESPONSE_HEADERS) {
