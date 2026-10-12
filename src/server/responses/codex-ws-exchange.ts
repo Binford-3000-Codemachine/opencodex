@@ -13,7 +13,7 @@ import { UPGRADE_DEADLINE_MS, CODEX_WS_LIVENESS_PING_INTERVAL_MS, CODEX_WS_RESPO
   codexWsCreateFrameExceedsLimit, codexWsFailureDetail, codexWsPreResponseFailure, markCodexWsStage, codexWsOcxVersion,
   markCodexWsSocketDeath, codexWsWrapperStatus, isCodexWsTerminalEvent, type CodexWsFailureStage, type CodexWsStageRecord,
   type CodexWsTerminalEvent, codexWsPreOutputRefusalStatus, isEmptyCodexWsLifecycleEvent, codexWsFrameResponseIds,
-  markCodexWsPreOutputRefusal } from "./codex-ws-wire";
+  markCodexWsPreOutputRefusal, type CodexWsPreOutputRefusalHold } from "./codex-ws-wire";
 
 interface ExchangeOptions {
   nativeControl?: NativeResponseControl;
@@ -34,7 +34,7 @@ interface ExchangeOptions {
    * of a committed 200. Absent or zero keeps the exchange exactly as it was. Ignored on native
    * control exchanges and on transports without the metadata channel.
    */
-  preOutputRefusalHoldMs?: number;
+  preOutputRefusalHold?: CodexWsPreOutputRefusalHold;
 }
 
 const HTTP_HEADER_TOKEN = /^[!#$%&'*+.^_`|~0-9a-z-]+$/i;
@@ -116,7 +116,7 @@ function refusalErrorBody(source: unknown): Record<string, string> {
 /** The sole SSE exchange state machine for both one-shot and retained sockets. */
 export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
   const { session, url, init, prepared, sseFallback, onQuota, beforeDispatch, bunVersion, nativeControl, beforeContinuation,
-    preOutputRefusalHoldMs = 0 } = options;
+    preOutputRefusalHold } = options;
   const { frameText, headers } = prepared;
   const signal = init.signal ?? undefined;
   return new Promise<Response>((resolve, reject) => {
@@ -163,7 +163,7 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
     // #6969: the pre-output refusal hold. While it is open, empty lifecycle frames are queued on the
     // not-yet-exposed stream without resolving it. Every settle other than an eligible refusal
     // commits first (deferredCommit), so the outcome is exactly what the exchange produced before.
-    const holdEnabled = preOutputRefusalHoldMs > 0 && metadata !== null && !nativeControl;
+    const holdEnabled = (preOutputRefusalHold?.maxMs ?? 0) > 0 && metadata !== null && !nativeControl;
     // Drops for good on any identity the exchange cannot tie to one response: a stream id, two
     // different ids in one frame, or an id that differs from the first one seen. Independent of
     // socket reuse, so a cold one-shot socket is held to the same rule as a pooled one.
@@ -262,14 +262,22 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
       resolve(response);
     };
 
-    /** Open the hold at the first empty lifecycle frame: freeze the prelude and bound the wait. */
-    const beginHold = () => {
-      if (heldHeaders || !metadata) return;
+    /**
+     * Open the hold at the first empty lifecycle frame: freeze the prelude and bound the wait by
+     * both the hold's own maximum and its absolute end. False when no time is left, so the frame
+     * commits exactly as it would without the hold.
+     */
+    const beginHold = (): boolean => {
+      if (heldHeaders) return true;
+      if (!metadata || !preOutputRefusalHold) return false;
+      const waitMs = Math.min(preOutputRefusalHold.maxMs, preOutputRefusalHold.until - Date.now());
+      if (waitMs <= 0) return false;
       heldHeaders = metadata.snapshot();
       metadata.commit();
       holdTimer = setTimeout(() => {
         if (!terminal && !responseCommitted) commitResponse();
-      }, preOutputRefusalHoldMs);
+      }, waitMs);
+      return true;
     };
 
     const noteRefusalIdentity = (payload: Record<string, unknown>) => {
@@ -641,8 +649,7 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
               refusalStatus = undefined;
             }
           }
-          holdFrame = refusalStatus === undefined && isEmptyCodexWsLifecycleEvent(normalized.payload);
-          if (holdFrame) beginHold();
+          holdFrame = refusalStatus === undefined && isEmptyCodexWsLifecycleEvent(normalized.payload) && beginHold();
         }
         if (refusalStatus === undefined && !holdFrame) commitResponse();
         else deferredCommit = true;

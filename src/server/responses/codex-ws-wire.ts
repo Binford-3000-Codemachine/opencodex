@@ -168,13 +168,27 @@ function emptyOutput(response: Record<string, unknown>): boolean {
  * whether the upstream refuses the turn before any output (#6969).
  *
  * Field rows put 97.5% of authoritative refusals within 5 s of the first Responses event and
- * 98.2% within 10 s, with nothing gained after that. Half the caller's header deadline keeps the
- * hold well clear of `connectTimeoutMs`, which would otherwise turn a held turn into a 504.
+ * 98.2% within 10 s, with nothing gained after that.
  */
 export const CODEX_WS_PRE_OUTPUT_REFUSAL_HOLD_MAX_MS = 10_000;
 
-export function codexWsPreOutputRefusalHoldMs(connectMs: number): number {
-  return Math.max(0, Math.min(CODEX_WS_PRE_OUTPUT_REFUSAL_HOLD_MAX_MS, Math.floor(connectMs / 2)));
+/**
+ * The hold one send may use: at most `maxMs` from the first empty lifecycle frame, and never past
+ * `until`, an absolute time.
+ */
+export interface CodexWsPreOutputRefusalHold {
+  maxMs: number;
+  until: number;
+}
+
+/**
+ * The hold for a send starting now. The caller's header deadline (`connectTimeoutMs`) starts no
+ * earlier than this, so ending every hold by half of it means a held turn always commits well before
+ * that deadline could abort it, however late the first lifecycle frame arrives.
+ */
+export function codexWsPreOutputRefusalHold(connectMs: number, now = Date.now()): CodexWsPreOutputRefusalHold {
+  const half = Math.max(0, Math.floor(connectMs / 2));
+  return { maxMs: Math.min(CODEX_WS_PRE_OUTPUT_REFUSAL_HOLD_MAX_MS, half), until: now + half };
 }
 
 /**

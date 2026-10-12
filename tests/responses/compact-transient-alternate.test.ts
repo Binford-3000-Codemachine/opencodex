@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as authContext from "../../src/codex/auth-context";
 import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -266,6 +267,27 @@ describe("native compact moves a surviving transient 5xx to one alternate accoun
     expect(sends.at(-1)).toBe("Bearer other-access");
     expect(result.first).toBe(3);
     expect(result.alternate).toBe(1);
+  });
+
+  test("a dispatch guard refusing B before it leaves keeps A's answer and outcome", async () => {
+    upstream(overloaded(), overloaded(), overloaded(), compacted);
+    const original = authContext.createCodexAuthDispatchGuard;
+    const guard = spyOn(authContext, "createCodexAuthDispatchGuard").mockImplementation((ctx, ...rest) => {
+      if (ctx.kind === "pool" && ctx.accountId === OTHER) {
+        return () => { throw new authContext.CodexPoolAccountCreditsOffError(OTHER, Date.now() + 60_000); };
+      }
+      return original(ctx, ...rest);
+    });
+    try {
+      const { response, body } = await compact();
+      expect(response.status).toBe(503);
+      expect(body).toContain("server_is_overloaded");
+      expect(sends.every(auth => auth === "Bearer work-access")).toBe(true);
+      expect(failures(WORK)).toBe(1);
+      expect(failures(OTHER)).toBe(0);
+    } finally {
+      guard.mockRestore();
+    }
   });
 
   test("a caller cancelling while B is in flight records A once and answers 499", async () => {

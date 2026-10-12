@@ -1061,6 +1061,7 @@ export async function handleResponsesCompact(
       sendHeaders: Headers,
       recovery: "normal" | "single",
       sendAuthCtx: CodexAuthContext,
+      onPhysicalDispatch?: () => void,
     ): Promise<Response> => {
       const doFetch = (upstreamRecovery?: UpstreamSendRecovery) => fetchWithHeaderTimeout(
         compactUrl,
@@ -1077,6 +1078,7 @@ export async function handleResponsesCompact(
           modelId: route.modelId,
           beforeDispatch: isCanonicalOpenAiForwardProvider(sendProvider)
             ? createCodexAuthDispatchGuard(sendAuthCtx, config, selectedModelId, admission) : undefined,
+          ...(onPhysicalDispatch ? { onPhysicalDispatch } : {}),
         }),
         // Every credential-bearing forward send gets manual redirects, not only
         // pool sends: direct mode carries the caller's credential too (#914).
@@ -1426,10 +1428,14 @@ export async function handleResponsesCompact(
           outcomeCtx = alternate.authCtx;
         };
         let alternateResponse: Response | undefined;
+        // Whether B's send actually left this process. Every local refusal before that point -- a
+        // spent budget, a dispatch guard such as disabled credits, a pacing refusal -- keeps A.
+        let alternateDispatched = false;
         try {
-          alternateResponse = await sendCompactAttempt(alternate.provider, alternate.headers, "single", alternate.authCtx);
+          alternateResponse = await sendCompactAttempt(alternate.provider, alternate.headers, "single", alternate.authCtx,
+            () => { alternateDispatched = true; });
         } catch (err) {
-          if (!(unwrapUpstreamRetryEvidenceError(err) instanceof SendBudgetExhaustedError)) {
+          if (alternateDispatched) {
             recordFirstMove();
             return failedAlternateCompactSend(err);
           }

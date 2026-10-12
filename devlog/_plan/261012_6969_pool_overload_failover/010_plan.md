@@ -205,7 +205,13 @@ attempt's `sendCount`, `recoveryKinds` and `codexWsStage` counters.
 HTTP SSE in-stream zero-output refusals and frames with an unrecognized code and no wrapper status
 stay unrecovered. Native steering/injection exchanges keep today's behaviour.
 
+## Implementation review follow-ups
 
-
-
-
+- Review round 1 (gpt-6.1-sol high, FAIL): projection headers built before any settle, falling
+  back to committed delivery when they cannot be projected; `rate_limit*`/`*quota*` veto; dispatch
+  logic moved to `PoolPreOutputRefusals` in `core-codex-account.ts` for the 2,000-line ratchet;
+  real spend-ledger, queue-overflow, non-resetting-deadline and header-timeout tests. Round 2: PASS.
+- PR review (Codex connector): the hold is now `{ maxMs, until }`, with `until` set per send to
+  half of `connectTimeoutMs` after it starts, so a late first lifecycle frame cannot hold past the
+  header deadline; compact keeps A whenever B never physically dispatched (tracked through
+  `onPhysicalDispatch`), not only on a spent budget.

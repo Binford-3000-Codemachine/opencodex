@@ -5,7 +5,7 @@ import { CodexWsSession } from "../../src/server/responses/codex-ws-session";
 import { prepareCodexWsRequest } from "../../src/server/responses/codex-ws-request";
 import { codexWsPool } from "../../src/server/responses/codex-ws-pool";
 import {
-  codexWsPreOutputRefusalHoldMs,
+  codexWsPreOutputRefusalHold,
   codexWsPreOutputRefusalStatus,
   codexWsSocketDeathStage,
   isCodexWsPreOutputRefusal,
@@ -90,11 +90,15 @@ const noFallback = (async () => {
   throw new Error("fallback must not run after open");
 }) as unknown as typeof fetch;
 
-function exchange(script: (ws: FakeWebSocket) => void, holdMs = HOLD_MS): Promise<Response> {
+function exchange(
+  script: (ws: FakeWebSocket) => void,
+  holdMs = HOLD_MS,
+  until = Number.MAX_SAFE_INTEGER,
+): Promise<Response> {
   installFake(script);
   return codexWsUpstreamFetch(
     CODEX_URL, streamingInit(), noFallback, BOUNDED_WS_RUNTIME,
-    undefined, undefined, undefined, undefined, undefined, holdMs,
+    undefined, undefined, undefined, undefined, undefined, { maxMs: holdMs, until },
   );
 }
 
@@ -318,7 +322,7 @@ describe("everything else keeps today's settle", () => {
     try {
       expect(session.reserve()).toBe(true);
       const response = await codexWsExchange({
-        session, url: CODEX_URL, init, prepared, nativeControl, sseFallback: noFallback, preOutputRefusalHoldMs: HOLD_MS,
+        session, url: CODEX_URL, init, prepared, nativeControl, sseFallback: noFallback, preOutputRefusalHold: { maxMs: HOLD_MS, until: Number.MAX_SAFE_INTEGER },
       });
       expect(response.status).toBe(200);
       expect(isCodexWsPreOutputRefusal(response)).toBe(false);
@@ -338,8 +342,26 @@ describe("refusal identity and hold bound", () => {
       .toBeUndefined();
   });
 
-  test("the hold never exceeds 10 s or half the header deadline", () => {
-    expect(codexWsPreOutputRefusalHoldMs(200_000)).toBe(10_000);
-    expect(codexWsPreOutputRefusalHoldMs(8_000)).toBe(4_000);
+  test("the hold never exceeds 10 s, and every hold ends by half the header deadline from the send", () => {
+    expect(codexWsPreOutputRefusalHold(200_000, 1_000)).toEqual({ maxMs: 10_000, until: 101_000 });
+    expect(codexWsPreOutputRefusalHold(8_000, 1_000)).toEqual({ maxMs: 4_000, until: 5_000 });
+  });
+
+  test("a lifecycle frame after the hold's end commits at once", async () => {
+    const response = await exchange(opened(CREATED, OVERLOADED), HOLD_MS, Date.now() - 1);
+    // Nothing was held, so the refusal after it is relayed in the committed body as before.
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("server_is_overloaded");
+  });
+
+  test("the hold ends at its absolute end even when the maximum is longer", async () => {
+    const started = Date.now();
+    const response = await exchange(ws => {
+      ws.emit("open", {});
+      ws.frame(CREATED);
+    }, HOLD_MS, Date.now() + 50);
+    expect(response.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(HOLD_MS);
+    void response.body?.cancel();
   });
 });

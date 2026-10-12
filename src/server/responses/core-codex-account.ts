@@ -24,11 +24,12 @@ import { readBoundedResponseBody } from "../../lib/bounded-body";
 import { upstreamErrorMessageFromPayload, isRateLimitOrQuotaFailureMessage } from "../../lib/errors";
 import { isNonReplayableResponse, isTransientUpstreamStatus, SendBudgetExhaustedError } from "../../lib/upstream-retry";
 import {
-  codexWsPreOutputRefusalHoldMs,
+  codexWsPreOutputRefusalHold,
   codexWsPreOutputRefusalOutcomeRecorded,
   isCodexWsPreOutputRefusal,
   noteCodexWsPreOutputRefusalOutcome,
   restoreCodexWsPreOutputRefusal,
+  type CodexWsPreOutputRefusalHold,
 } from "./codex-ws-wire";
 import type { RequestLogContext } from "../request-log";
 import type { DataPlaneAdmission } from "../auth-cors";
@@ -156,17 +157,18 @@ export function recordCodexPreOutputRefusalOutcome(
 }
 
 /**
- * The pre-output refusal hold for one Pool send (#6969), or undefined. Pool forward sends only,
- * and never a combo child, whose own stream preflight already advances on a zero-output terminal.
- * Every projection a send produces must later pass through {@link PoolPreOutputRefusals.restore}.
+ * The pre-output refusal hold for one Pool send starting now (#6969), or undefined. Pool forward
+ * sends only, and never a combo child, whose own stream preflight already advances on a zero-output
+ * terminal. Every projection a send produces must later pass through
+ * {@link PoolPreOutputRefusals.restore}.
  */
-export function poolPreOutputRefusalHoldMs(
+export function poolPreOutputRefusalHold(
   authCtx: CodexAuthContext,
   provider: OcxProviderConfig,
   connectMs: number,
   comboAttempt: boolean | undefined,
-): number | undefined {
-  return !comboAttempt && usesCodexForwardPoolAuth(authCtx, provider) ? codexWsPreOutputRefusalHoldMs(connectMs) : undefined;
+): CodexWsPreOutputRefusalHold | undefined {
+  return !comboAttempt && usesCodexForwardPoolAuth(authCtx, provider) ? codexWsPreOutputRefusalHold(connectMs) : undefined;
 }
 
 /**
@@ -515,7 +517,7 @@ export interface CodexPoolAccountRetryArgs {
   /** Keep a buffered canonical client on HTTP/SSE after moving to another Pool account. */
   httpOnly?: boolean;
   /** Pre-output refusal hold for the alternate's WebSocket send (#6969); the caller restores. */
-  preOutputRefusalHoldMs?: number;
+  preOutputRefusalHold?: CodexWsPreOutputRefusalHold;
   onResponse?: (
     response: Response,
     authCtx: CodexAuthContext,
@@ -1019,7 +1021,7 @@ export async function retryCodexPoolOnAlternateAccount(
             httpOnly,
             providerName: route.providerName,
             modelId: route.modelId,
-            preOutputRefusalHoldMs: args.preOutputRefusalHoldMs,
+            preOutputRefusalHold: args.preOutputRefusalHold,
             onCodexWsQuota: codexWsQuotaObserver(retryAuthCtx, route.provider, route.modelId),
             beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
               ? createCodexAuthDispatchGuard(retryAuthCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
