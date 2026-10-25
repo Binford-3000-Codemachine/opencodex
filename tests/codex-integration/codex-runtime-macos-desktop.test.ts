@@ -38,6 +38,7 @@ function fixture() {
   const deps: ResolveCodexRuntimeDeps = {
     platform: "darwin", env: { HOME: home.replaceAll("\\", "/"), PATH: "" }, configDir,
     existsSync: path => versions.has(path), execFileSync: exec, execFile: async file => exec(file),
+    macBundleTrustReason: () => null,
   };
   const pin = (command: string, origin?: "pinned" | "discovered") => writeFileSync(codexRuntimeStatePath(configDir), JSON.stringify({
     version: 1, command, source: "installed", selectedVersion: "0.150.0", updatedAt: "2026-10-13T00:00:00Z", origin,
@@ -64,6 +65,15 @@ describe.skipIf(process.platform === "win32")("macOS Codex app runtime discovery
     expect(resolveCodexRuntime(f.deps).runtime.command).toBe(`${SYSTEM}/${OLDER}`);
     f.versions.delete(`${SYSTEM}/${OLDER}`);
     expect(resolveCodexRuntime(f.deps).runtime.command).toBe(f.current);
+  });
+
+  test("rejects an app CLI that fails publisher or filesystem trust before probing", () => {
+    const f = fixture(); f.versions.set(f.current, "0.162.0");
+    const checked: string[][] = [];
+    f.deps.macBundleTrustReason = (bundle, binary) => { checked.push([bundle, binary]); return "untrusted"; };
+    expect(resolveCodexRuntime(f.deps).runtime.source).toBe("fallback");
+    expect(checked).toContainEqual([f.bundle, f.current]);
+    expect(f.probed).not.toContain(f.current);
   });
 
   for (const source of ["environment", "configured", "shim", "path", "installed", "fallback"] as const) {
@@ -254,6 +264,11 @@ describe.skipIf(process.platform === "win32")("macOS Codex app runtime discovery
   test("an injected identity reader cannot populate the process memo", () => {
     expect(() => setCodexRuntimeResolveCacheForTests({ runtime: { command: "codex", version: null, source: "fallback" }, failures: [] },
       { readBundleIdentifier: () => "com.openai.codex" })).toThrow("Injected runtime dependencies");
+  });
+
+  test("an injected bundle trust check cannot populate the process memo", () => {
+    expect(() => setCodexRuntimeResolveCacheForTests({ runtime: { command: "codex", version: null, source: "fallback" }, failures: [] },
+      { macBundleTrustReason: () => null })).toThrow("Injected runtime dependencies");
   });
 });
 

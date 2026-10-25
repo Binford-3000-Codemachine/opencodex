@@ -9,6 +9,7 @@ import { decodeOverlayState } from "./shim-state-file";
 import { redactSecretString, redactUserPath } from "../lib/redact";
 import { SUBPROCESS_KILL_GRACE_MS, waitForSubprocessExit } from "../lib/bounded-subprocess";
 import { isPassiveRead } from "../lib/passive-read";
+import { untrustedChatgptBundleReason } from "../chatgpt/app-server-shim/bundle-trust";
 
 export type CodexRuntimeSource =
   | "environment"
@@ -92,6 +93,8 @@ export interface ResolveCodexRuntimeDeps {
   readFileSync?: (path: string, encoding: "utf8") => string;
   /** Bounded in-process macOS bundle identity reader; injected readers bypass the memo. */
   readBundleIdentifier?: (infoPlistPath: string) => string | null;
+  /** macOS bundle publisher/filesystem trust check; injected checks bypass the memo. */
+  macBundleTrustReason?: (bundleRoot: string, binary: string) => string | null;
   now?: () => number;
   /**
    * When false, stop after the first valid priority candidate (skip PATH-wide
@@ -650,7 +653,8 @@ function macCodexAppIdentityMatches(command: string, deps: ResolveCodexRuntimeDe
   const bundle = macCodexAppBundleFor(command, deps);
   if (!bundle) return true;
   try {
-    return (deps.readBundleIdentifier ?? readBoundedBundleIdentifier)(`${bundle}/Contents/Info.plist`) === "com.openai.codex";
+    if ((deps.readBundleIdentifier ?? readBoundedBundleIdentifier)(`${bundle}/Contents/Info.plist`) !== "com.openai.codex") return false;
+    return !(deps.macBundleTrustReason ?? untrustedChatgptBundleReason)(bundle, command);
   } catch { return false; }
 }
 
@@ -1015,6 +1019,7 @@ function resolveCacheKey(deps: ResolveCodexRuntimeDeps): string | null {
     || deps.existsSync
     || deps.readFileSync
     || deps.readBundleIdentifier
+    || deps.macBundleTrustReason
     || deps.readdirSync
     || deps.statSync
     || deps.configDir
