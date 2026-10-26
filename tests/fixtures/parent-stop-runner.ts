@@ -25,6 +25,8 @@ const options = JSON.parse(readFileSync(0, "utf8")) as {
   alreadyStopped?: boolean;
   absence?: "dead" | "unknown" | "live";
   managerState?: "inactive" | "active" | "unknown";
+  /** #7423: run the stop the way an update that restarts the proxy runs it. */
+  handover?: boolean;
 };
 if (options.proxyProbePort) {
   // Deliberately bypass every fixture mock for the real proxy-environment regression.
@@ -198,6 +200,7 @@ mock.module("../../src/server/direct-local-http", () => ({ ...direct,
 }));
 
 process.argv = [process.execPath, "ocx", "stop", ...(options.json ? ["--json"] : [])];
+if (options.handover) process.env.OCX_UPDATE_TEARDOWN_HANDOVER = "1";
 if (options.exitCleanup) {
   delete process.env.OCX_SERVICE;
   // Execute the actual startup exit closure, with only host/config effects replaced.

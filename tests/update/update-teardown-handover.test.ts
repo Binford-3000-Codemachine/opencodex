@@ -1,0 +1,240 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { CodexNativeRestoreResult } from "../../src/codex/inject";
+import { syncCodexOnStartIfEnabled } from "../../src/codex/desired-state";
+import { claimPendingTeardown, isUpdateHandoverReceipt, pendingTeardownPathFor, readPendingTeardown } from "../../src/config/pending-teardown";
+import { performStopTeardown } from "../../src/server/stop-teardown";
+import { runGuiUpdateWorker, updateJobPath } from "../../src/update/job";
+import {
+  STOP_HISTORY_DEFERRED_EXIT_CODE,
+  STOP_HISTORY_INCOMPLETE_EXIT_CODE,
+  STOP_TEARDOWN_HANDED_OVER_EXIT_CODE,
+} from "../../src/update/stop-contract.mjs";
+import { decidePostStopUpdate } from "../../src/update/stop-decision.mjs";
+import {
+  dischargeUpdateTeardownHandovers,
+  stopHandsTeardownOver,
+  UPDATE_TEARDOWN_HANDOVER_ENV,
+} from "../../src/update/teardown-handover";
+import type { OcxConfig } from "../../src/types";
+import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { fixturePath, repoPath } from "../helpers/repo-root";
+
+/**
+ * #7423: an update restart left a window where Codex could load the pristine catalog.
+ *
+ * The update's `ocx stop` restored native Codex, which removed every routed catalog row,
+ * and the new proxy appended them again only after it started. A Codex process that loaded
+ * the catalog in between treated routed models as unknown until it was restarted. These
+ * cases pin the handover that closes the window: the stop keeps its receipt instead of
+ * restoring, the proxy keeps its client config on exit, the updater proceeds past that one
+ * receipt, and the replacement releases it after its first successful publication.
+ */
+
+const ENDPOINT = { hostname: "127.0.0.1", port: 10100 };
+const DEAD = () => false;
+let home: string;
+let previousHome: string | undefined;
+
+beforeEach(() => {
+  previousHome = process.env.OPENCODEX_HOME;
+  home = mkdtempSync(join(tmpdir(), "ocx-teardown-handover-"));
+  process.env.OPENCODEX_HOME = home;
+});
+
+afterEach(() => {
+  if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousHome;
+  removeTreeWithRetry(home);
+});
+
+const receiptNames = () => readdirSync(home).filter(name => name.startsWith("pending-teardown"));
+
+describe("handover exit code and update decision", () => {
+  test("81 is distinct from the history codes and from every literal code the CLI emits", () => {
+    expect(STOP_TEARDOWN_HANDED_OVER_EXIT_CODE).toBe(81);
+    expect([STOP_HISTORY_INCOMPLETE_EXIT_CODE, STOP_HISTORY_DEFERRED_EXIT_CODE]).not.toContain(81);
+    const cli = readFileSync(repoPath("src", "cli", "index.ts"), "utf8");
+    const dispatch = readFileSync(repoPath("src", "cli", "dispatch.ts"), "utf8");
+    const literal = [...cli.matchAll(/process\.exit(?:Code)?\s*(?:=|\()\s*(\d+)/g), ...dispatch.matchAll(/return (\d+);/g)]
+      .map(match => Number(match[1]));
+    expect(literal).not.toContain(81);
+  });
+
+  test("a handed-over stop proceeds past its own receipt and nothing else", () => {
+    const status = STOP_TEARDOWN_HANDED_OVER_EXIT_CODE;
+    expect(decidePostStopUpdate({ status, hasRuntimeState: false, liveness: "dead", teardownOutstanding: true }))
+      .toEqual({ proceed: true, reason: "handed-over" });
+    expect(decidePostStopUpdate({ status, hasRuntimeState: true, liveness: "dead", teardownOutstanding: true }).reason).toBe("runtime-state");
+    expect(decidePostStopUpdate({ status, hasRuntimeState: false, liveness: "live", teardownOutstanding: true }).reason).toBe("proxy-live");
+    expect(decidePostStopUpdate({ status, hasRuntimeState: false, liveness: "unknown", teardownOutstanding: true }).reason).toBe("proxy-unknown");
+    // An ordinary stop that leaves a receipt behind still aborts, exactly as before.
+    expect(decidePostStopUpdate({ status: 0, hasRuntimeState: false, liveness: "dead", teardownOutstanding: true }).reason)
+      .toBe("teardown-outstanding");
+  });
+});
+
+describe("stop handover predicate", () => {
+  const facts = (nonce: string | undefined) => ({
+    requested: true, restoreBlocked: false, nonce, stopFailed: false, recoveredCount: 0, proxy: "stopped",
+  });
+
+  test("hands over only this run's own receipt, alone, after a clean stop", () => {
+    const own = claimPendingTeardown(ENDPOINT, "exact", process.pid, "update-restart").nonce;
+    expect(stopHandsTeardownOver(facts(own))).toBe(true);
+    expect(stopHandsTeardownOver({ ...facts(own), proxy: "stopped-orphan" })).toBe(true);
+    expect(stopHandsTeardownOver({ ...facts(own), requested: false })).toBe(false);
+    expect(stopHandsTeardownOver({ ...facts(own), restoreBlocked: true })).toBe(false);
+    expect(stopHandsTeardownOver({ ...facts(own), stopFailed: true })).toBe(false);
+    expect(stopHandsTeardownOver({ ...facts(own), recoveredCount: 1 })).toBe(false);
+    expect(stopHandsTeardownOver({ ...facts(own), proxy: "not-running" })).toBe(false);
+    expect(stopHandsTeardownOver(facts(undefined))).toBe(false);
+  });
+
+  test("another obligation in the home forces the ordinary restore", () => {
+    const own = claimPendingTeardown(ENDPOINT, "exact", process.pid, "update-restart").nonce;
+    claimPendingTeardown(ENDPOINT, "exact", 999_999);
+    expect(stopHandsTeardownOver(facts(own))).toBe(false);
+  });
+});
+
+describe("handover receipts", () => {
+  test("the handover marker round-trips and an unknown marker invalidates the receipt", () => {
+    const handover = claimPendingTeardown(ENDPOINT, "exact", 4242, "update-restart");
+    const ordinary = claimPendingTeardown(ENDPOINT, "exact", 4242);
+    expect(isUpdateHandoverReceipt(handover.nonce)).toBe(true);
+    expect(isUpdateHandoverReceipt(ordinary.nonce)).toBe(false);
+    expect(isUpdateHandoverReceipt(null)).toBe(false);
+    const path = pendingTeardownPathFor(ordinary.nonce);
+    writeFileSync(path, JSON.stringify({ ...ordinary, handover: "anything" }));
+    expect(readPendingTeardown(ordinary.nonce).state).toBe("invalid");
+  });
+
+  test("startup discharge releases only abandoned handover receipts", () => {
+    const abandoned = claimPendingTeardown(ENDPOINT, "exact", 4242, "update-restart").nonce;
+    const ordinary = claimPendingTeardown(ENDPOINT, "exact", 4243).nonce;
+    const running = claimPendingTeardown(ENDPOINT, "exact", 4244, "update-restart").nonce;
+    const result = dischargeUpdateTeardownHandovers(pid => pid === 4244);
+    expect(result).toEqual({ discharged: [abandoned], failed: [] });
+    expect(existsSync(pendingTeardownPathFor(abandoned))).toBe(false);
+    expect(existsSync(pendingTeardownPathFor(ordinary))).toBe(true);
+    expect(existsSync(pendingTeardownPathFor(running))).toBe(true);
+    expect(dischargeUpdateTeardownHandovers(DEAD).discharged).toEqual([running]);
+  });
+});
+
+describe("proxy side of the stop", () => {
+  const restored: CodexNativeRestoreResult = { success: true, message: "restored" } as CodexNativeRestoreResult;
+
+  for (const handover of [true, false]) {
+    test(`a deferred ${handover ? "handover" : "ordinary"} stop ${handover ? "keeps" : "does not keep"} client config on exit`, async () => {
+      const nonce = claimPendingTeardown(ENDPOINT, "exact", 4242, handover ? "update-restart" : undefined).nonce;
+      let kept = 0;
+      let restores = 0;
+      const body = await performStopTeardown(new URL(`http://127.0.0.1:10100/api/stop?deferSharedTeardown=1&teardownNonce=${nonce}`), {
+        keepClientConfigOnExit: () => { kept += 1; },
+        restoreNativeCodex: async () => { restores += 1; return restored; },
+        stripGrok: () => ({ ok: true, changed: false, message: "" }),
+      });
+      expect(body.sharedTeardown).toBe("deferred");
+      expect(kept).toBe(handover ? 1 : 0);
+      expect(restores).toBe(0);
+    });
+  }
+});
+
+describe("ocx stop under an update handover", () => {
+  const restore = {
+    success: true, message: "native Codex restored",
+    artifacts: { config: { state: "restored" }, catalog: { state: "restored" }, history: { state: "restored" } },
+  };
+
+  function runStop(handover: boolean) {
+    const child = spawnSync(process.execPath, [fixturePath("parent-stop-runner.ts")], {
+      cwd: repoPath(),
+      env: { ...process.env, OPENCODEX_HOME: home },
+      input: JSON.stringify({ receipt: true, serverTeardown: true, json: true, response: null, restore, handover }),
+      encoding: "utf8",
+      timeout: 20_000,
+      windowsHide: true,
+    });
+    expect(child.error, child.stderr).toBeUndefined();
+    const report = JSON.parse(readFileSync(join(home, "parent-stop-result.json"), "utf8")) as {
+      calls: { native: number; grok: number; cleared: number };
+      nonce?: string; receiptExists: boolean; unexpectedIo: string[];
+    };
+    expect(report.unexpectedIo, child.stderr).toEqual([]);
+    return { ...report, exitCode: child.status, stdout: child.stdout, stderr: child.stderr };
+  }
+
+  test("keeps Codex routing and the catalog for the replacement and exits 81", () => {
+    const run = runStop(true);
+    expect(run.exitCode, run.stderr).toBe(STOP_TEARDOWN_HANDED_OVER_EXIT_CODE);
+    // Boundary one of the issue: nothing restored the pristine catalog after the old proxy stopped.
+    expect(run.calls).toMatchObject({ native: 0, grok: 0, cleared: 0 });
+    expect(run.receiptExists).toBe(true);
+    expect(isUpdateHandoverReceipt(run.nonce ?? null)).toBe(true);
+    expect(JSON.parse(run.stdout)).toMatchObject({ proxy: "stopped", sharedTeardown: "skipped", exitCode: 81 });
+    expect(decidePostStopUpdate({ status: run.exitCode, hasRuntimeState: false, liveness: "dead", teardownOutstanding: true }))
+      .toEqual({ proceed: true, reason: "handed-over" });
+  });
+
+  test("an ordinary stop still restores native Codex and releases its receipt", () => {
+    const run = runStop(false);
+    expect(run.exitCode, run.stderr).toBe(0);
+    expect(run.calls).toMatchObject({ native: 1, grok: 1, cleared: 1 });
+    expect(run.receiptExists).toBe(false);
+    expect(receiptNames()).toEqual([]);
+  });
+});
+
+describe("startup publication", () => {
+  const config = { providers: {} } as unknown as OcxConfig;
+  const cases: Array<[string, Record<string, unknown> | undefined, boolean]> = [
+    ["applied", { ok: true, status: "applied" }, true],
+    ["catalog-only", { ok: true, status: "catalog-only" }, true],
+    ["skipped", { ok: true, status: "skipped" }, false],
+    ["failed", { ok: false, status: "applied" }, false],
+    ["thrown", undefined, false],
+  ];
+  for (const [name, outcome, published] of cases) {
+    test(`a ${name} startup sync ${published ? "publishes" : "does not publish"}`, async () => {
+      const result = await syncCodexOnStartIfEnabled(10100, config, async () => {
+        if (!outcome) throw new Error("sync failed");
+        return outcome as never;
+      });
+      expect(result.published).toBe(published);
+    });
+  }
+});
+
+describe("dashboard update job", () => {
+  for (const restart of [true, false]) {
+    test(`${restart ? "requests" : "does not request"} the handover when restart=${restart}`, async () => {
+      let updateEnv: NodeJS.ProcessEnv | undefined;
+      await runGuiUpdateWorker(`handover-${restart}`, "latest", restart, {
+        checkForUpdateFn: () => ({
+          currentVersion: "2.7.40", latestVersion: "2.7.41", channel: "latest", installer: "pnpm",
+          updateAvailable: true, canUpdate: true, command: "node /old/bin/ocx.mjs update --tag latest",
+          releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+        }),
+        resolvePnpmOwnerFn: () => ({ ok: true as const, owner: {
+          commandPath: "/pnpm/owner/bin/pnpm", packagePath: "/pnpm/owner/global/v11/node_modules/@bitkyc08/opencodex",
+          globalDir: "/pnpm/owner/global", globalRoot: "/pnpm/owner/global/v11", globalBinDir: "/pnpm/owner/bin",
+        } }),
+        resolvePnpmActiveLauncherFn: () => "/pnpm/owner/global/v11/node_modules/@bitkyc08/opencodex/bin/ocx.mjs",
+        integrityFn: () => ({ ok: true as const, integrity: "sha512-testfixturevalue000000000" }),
+        // Only the environment handed to the update child matters here; failing the command
+        // ends the job before any restart work, which other suites already cover.
+        runCommandFn: (_job, _bin, _args, _timeout, env) => { updateEnv = env; return { status: 1, signal: null }; },
+      });
+      if (restart) expect(updateEnv?.[UPDATE_TEARDOWN_HANDOVER_ENV]).toBe("1");
+      else expect(updateEnv).toBeUndefined();
+      rmSync(updateJobPath(), { force: true });
+    });
+  }
+});
+
