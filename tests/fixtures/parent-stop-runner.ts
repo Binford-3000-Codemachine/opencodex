@@ -27,6 +27,8 @@ const options = JSON.parse(readFileSync(0, "utf8")) as {
   managerState?: "inactive" | "active" | "unknown";
   /** #7423: run the stop the way an update that restarts the proxy runs it. */
   handover?: boolean;
+  /** The runtime-port record is missing, so the stop can only record a guessed endpoint. */
+  noRuntimeRecord?: boolean;
 };
 if (options.proxyProbePort) {
   // Deliberately bypass every fixture mock for the real proxy-environment regression.
@@ -103,7 +105,7 @@ const state = await import("../../src/config/process-state");
 mock.module("../../src/config/process-state", () => ({
   ...state,
   readPid: () => options.orphan || options.alreadyStopped ? null : fakePid,
-  readRuntimePort: () => options.alreadyStopped ? null : endpoint,
+  readRuntimePort: () => options.alreadyStopped || options.noRuntimeRecord ? null : endpoint,
   removePid() {},
   removeRuntimePort() {},
 }));

@@ -4,6 +4,7 @@ import {
   listPendingTeardowns,
   pendingTeardownPathFor,
   pendingTeardownsAreExactly,
+  readPendingTeardown,
 } from "../config/pending-teardown";
 
 /**
@@ -78,7 +79,18 @@ export function stopHandsTeardownOver(facts: StopHandoverFacts): boolean {
   const proxyDown = facts.proxy === "stopped" || facts.proxy === "stopped-orphan"
     || (facts.proxy === "not-running" && managerStopped);
   return facts.requested && !facts.restoreBlocked && facts.nonce !== undefined && !facts.stopFailed
-    && facts.recoveredCount === 0 && proxyDown && pendingTeardownsAreExactly([facts.nonce]);
+    && facts.recoveredCount === 0 && proxyDown && pendingTeardownsAreExactly([facts.nonce])
+    && handoverReceiptIsRecoverable(facts.nonce);
+}
+
+/**
+ * A handed-over receipt must be one a later `ocx stop` can finish on its own if no
+ * replacement ever starts. A `guessed` endpoint fails closed into manual recovery there,
+ * so a stop that could only record the configured address restores instead.
+ */
+function handoverReceiptIsRecoverable(nonce: string): boolean {
+  const read = readPendingTeardown(nonce);
+  return read.state === "valid" && read.receipt.endpointSource === "exact" && read.receipt.handover === "update-restart";
 }
 
 export function announceStopHandover(log: Pick<Console, "log"> = console): void {

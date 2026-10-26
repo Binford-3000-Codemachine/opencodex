@@ -108,6 +108,16 @@ describe("stop handover predicate", () => {
     claimPendingTeardown(ENDPOINT, "exact", 999_999);
     expect(stopHandsTeardownOver(facts(own))).toBe(false);
   });
+
+  test("a guessed or unmarked receipt is never handed over", () => {
+    // A later ocx stop refuses to finish a guessed receipt, so handing one over could
+    // leave Codex routed at a dead proxy with only a manual way out.
+    const guessed = claimPendingTeardown(ENDPOINT, "guessed", process.pid, "update-restart").nonce;
+    expect(stopHandsTeardownOver(facts(guessed))).toBe(false);
+    rmSync(pendingTeardownPathFor(guessed), { force: true });
+    const unmarked = claimPendingTeardown(ENDPOINT, "exact", process.pid).nonce;
+    expect(stopHandsTeardownOver(facts(unmarked))).toBe(false);
+  });
 });
 
 describe("handover receipts", () => {
@@ -208,6 +218,13 @@ describe("ocx stop under an update handover", () => {
 
   test("a manager-stopped ordinary stop still restores", () => {
     const run = runStop(false, { managerCascades: true });
+    expect(run.exitCode, run.stderr).toBe(0);
+    expect(run.calls).toMatchObject({ native: 1, grok: 1 });
+    expect(receiptNames()).toEqual([]);
+  });
+
+  test("without a runtime record the stop restores instead of handing over a guessed receipt", () => {
+    const run = runStop(true, { noRuntimeRecord: true, nativeSignal: true });
     expect(run.exitCode, run.stderr).toBe(0);
     expect(run.calls).toMatchObject({ native: 1, grok: 1 });
     expect(receiptNames()).toEqual([]);
