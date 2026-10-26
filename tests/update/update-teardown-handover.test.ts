@@ -363,7 +363,8 @@ describe("dashboard update job", () => {
       let updateEnv: NodeJS.ProcessEnv | undefined;
       // A worker launched by a recovery-started proxy could have inherited the marker.
       process.env[UPDATE_TEARDOWN_HANDOVER_ENV] = "1";
-      await runGuiUpdateWorker(`handover-${restart}`, "latest", restart, {
+      try {
+        await runGuiUpdateWorker(`handover-${restart}`, "latest", restart, {
         checkForUpdateFn: () => ({
           currentVersion: "2.7.40", latestVersion: "2.7.41", channel: "latest", installer: "pnpm",
           updateAvailable: true, canUpdate: true, command: "node /old/bin/ocx.mjs update --tag latest",
@@ -378,11 +379,14 @@ describe("dashboard update job", () => {
         // Only the environment handed to the update child matters here; failing the command
         // ends the job before any restart work, which other suites already cover.
         runCommandFn: (_job, _bin, _args, _timeout, env) => { updateEnv = env; return { status: 1, signal: null }; },
-      });
-      delete process.env[UPDATE_TEARDOWN_HANDOVER_ENV];
+        });
+      } finally {
+        // The marker lives in this worker's shared environment; never let it reach a later test.
+        delete process.env[UPDATE_TEARDOWN_HANDOVER_ENV];
+        rmSync(updateJobPath(), { force: true });
+      }
       expect(updateEnv).toBeDefined();
       expect(updateEnv?.[UPDATE_TEARDOWN_HANDOVER_ENV]).toBe(restart ? "1" : undefined);
-      rmSync(updateJobPath(), { force: true });
     });
   }
 
