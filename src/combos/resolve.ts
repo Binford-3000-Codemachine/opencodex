@@ -3,6 +3,7 @@ import { getCachedProviderRoutingQuota } from "../providers/quota-routing-cache"
 import type { ProviderQuota, ProviderQuotaWindow } from "../providers/quota-types";
 import { sleepWithAbort } from "../lib/upstream-retry";
 import {
+  clearComboTargetCooldowns,
   coolComboTarget,
   earliestComboCooldown,
   isComboTargetInCooldown,
@@ -436,6 +437,11 @@ export function noteComboSuccess(
 ): void {
   const key = targetKey(target);
   if (!mayCommitComboState(comboId, key, writerGeneration)) return;
+  // A cooled target reaches dispatch only through a request-scoped reprobe, so a serve is
+  // that probe's outcome: success disproves the shared cooldown and lifts it for everyone.
+  // The reservation alone keeps it recorded until this point (concurrent picks stay out),
+  // and a failed probe re-cools through advanceComboAfterFailure instead of reaching here.
+  if (isComboTargetInCooldown(comboId, target)) clearComboTargetCooldowns(comboId, [key]);
   if (combo.strategy === "least-used") {
     let state = selectionState.get(comboId);
     if (!state) {
