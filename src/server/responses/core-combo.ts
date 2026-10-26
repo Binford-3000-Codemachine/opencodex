@@ -35,6 +35,7 @@ import {
   comboExclusionReasons,
   comboTargetSkipTrigger,
   noteComboSuccess,
+  settleComboReprobeSuccess,
   comboFailureDecision,
   advanceComboAfterFailure,
   comboFailureCooldownScope,
@@ -582,6 +583,8 @@ export async function executeComboResponses(
     exclude?: Iterable<string>;
     eligible?: (target: NonNullable<typeof combo>["targets"][number]) => boolean;
     allowCooldownReprobe?: boolean;
+    /** This request's own cooldown-reprobe reservation, carried through its failover hops. */
+    cooldownReprobeTargets?: Iterable<readonly [string, number]>;
     now?: number;
   }) => pickComboTargetWithWait(config, comboId, {
     ...pickOptions,
@@ -1170,6 +1173,7 @@ export async function executeComboResponses(
       );
       attemptRetained = true;
       noteComboSuccess(comboId, combo, pick.target, pick.writerGeneration);
+      settleComboReprobeSuccess(pick);
       Object.assign(logCtx, childLog, {
         requestedModel,
         model: requestedModel,
@@ -1368,10 +1372,13 @@ export async function executeComboResponses(
       && failedTargetCooldownRecorded
       && isComboTargetInCooldown(comboId, pick.target, failureNow);
     // Drop exclusions for the single-target retry, but wait for normal cooldown
-    // expiry: an in-flight request cannot reserve a fresh recovery pass.
-    const retryAfterCooldown = () =>
+    // expiry: an in-flight request cannot reserve a fresh recovery pass, though the
+    // reservation it already owns still applies to entries unchanged since it was made.
+    const carriedReprobe: ComboPick["cooldownReprobeTargets"] = pick.cooldownReprobeTargets;
+    const retryAfterCooldown = (): Promise<ComboPick | null> =>
       pickWithWait({
         allowCooldownReprobe: false,
+        cooldownReprobeTargets: carriedReprobe ? Object.entries(carriedReprobe) : undefined,
         eligible: targetEligible,
         now: failureNow,
       });
@@ -1381,6 +1388,7 @@ export async function executeComboResponses(
       pick = await pickWithWait({
         exclude: pick.attempted,
         eligible: targetEligible,
+        cooldownReprobeTargets: carriedReprobe ? Object.entries(carriedReprobe) : undefined,
         now: failureNow,
       });
       // A single-target combo with waitForCooldownMs has no alternate target to fail over to,
@@ -1414,6 +1422,7 @@ export async function executeComboResponses(
         const recoveredTarget = await pickWithWait({
           exclude: attemptedTargets,
           eligible: recoveryEligible,
+          cooldownReprobeTargets: carriedReprobe ? Object.entries(carriedReprobe) : undefined,
           now: failureNow,
         });
         if (recoveredTarget && await recoverUnreadableEncryptedTask()) {

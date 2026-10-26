@@ -163,6 +163,35 @@ export function isComboTargetInCooldown(
   return true;
 }
 
+/** The live cooldown expiry for one target, or undefined once it is absent or elapsed. */
+export function comboTargetCooldownExpiry(
+  comboId: string,
+  target: Pick<OcxComboTarget, "provider" | "model">,
+  now = Date.now(),
+): number | undefined {
+  const key = cooldownMapKey(comboId, target);
+  const entry = targetCooldowns.get(key);
+  if (!entry) return undefined;
+  if (entry.cooldownUntil <= now) {
+    targetCooldowns.delete(key);
+    return undefined;
+  }
+  return entry.cooldownUntil;
+}
+
+/**
+ * Lift a target's cooldown only while it is still the exact entry `expectedExpiry` named.
+ * A replaced entry is newer failure evidence and survives.
+ */
+export function clearComboTargetCooldownIfUnchanged(
+  comboId: string,
+  target: Pick<OcxComboTarget, "provider" | "model">,
+  expectedExpiry: number,
+): void {
+  const key = cooldownMapKey(comboId, target);
+  if (targetCooldowns.get(key)?.cooldownUntil === expectedExpiry) targetCooldowns.delete(key);
+}
+
 export function isTransientRequestRateLimit(input: {
   status?: number;
   code?: string | null;
