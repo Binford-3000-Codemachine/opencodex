@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { pickComboTarget, pickComboTargetWithWait, advanceComboAfterFailure, clearComboSelectionState } from '../../src/combos/resolve';
+import { pickComboTarget, pickComboTargetWithWait, advanceComboAfterFailure, clearComboSelectionState, settleComboReprobeSuccess } from '../../src/combos/resolve';
 import { clearComboTargetCooldowns, coolComboTarget, isComboTargetInCooldown } from '../../src/combos/failover';
 import { comboConfigIssues, normalizeComboConfig } from '../../src/combos/types';
 import { routeModel } from '../../src/router';
@@ -77,6 +77,52 @@ describe('opt-in cooldown recovery', () => {
     });
     expect(second!.target.model).toBe('test-b');
     expect(pickComboTarget(config, id, { now })).toBeNull();
+  });
+  test('a failed single-target reprobe cannot bypass the same absolute Retry-After again', async () => {
+    const { id, config } = setup();
+    config.combos![id]!.targets = [targets[0]!];
+    const retryAfter = new Date(now + 30_000).toUTCString();
+    coolComboTarget(id, targets[0]!, { now, retryAfter, status: 429 });
+    const reserved = pickComboTarget(config, id, { now })!;
+    expect(advanceComboAfterFailure(config, reserved, {
+      now: now + 1_000, status: 429, retryAfter, cooldownScope: 'target',
+    })).toBeNull();
+    const sleeps: number[] = [];
+    const retried = await pickComboTargetWithWait(config, id, {
+      now: now + 1_000, waitForCooldownMs: 1_000, allowCooldownReprobe: false,
+      cooldownReprobeTargets: Object.entries(reserved.cooldownReprobeTargets!),
+      sleep: async delay => { sleeps.push(delay); },
+    });
+    expect(retried).toBeNull();
+    expect(sleeps).toEqual([]);
+    expect(isComboTargetInCooldown(id, targets[0]!, now + 1_000)).toBe(true);
+  });
+  test('a provider failure replaces same-expiry reservations for every sibling', () => {
+    const { id, config } = setup();
+    const retryAfter = new Date(now + 30_000).toUTCString();
+    for (const target of targets) coolComboTarget(id, target, { now, retryAfter, status: 429 });
+    const reserved = pickComboTarget(config, id, { now })!;
+    expect(advanceComboAfterFailure(config, reserved, {
+      now: now + 1_000, status: 429, retryAfter, cooldownScope: 'provider',
+    })).toBeNull();
+    expect(targets.every(target => isComboTargetInCooldown(id, target, now + 1_000))).toBe(true);
+  });
+  test('successful reprobe settlement preserves a replacement with the same expiry', () => {
+    const { id, config } = setup();
+    const reserved = pickComboTarget(config, id, { now })!;
+    // A concurrent failure can write identical expiry and status, even in the same tick.
+    coolComboTarget(id, reserved.target, { now, retryAfter: '36000', status: 429 });
+    settleComboReprobeSuccess(reserved);
+    expect(isComboTargetInCooldown(id, reserved.target, now)).toBe(true);
+    expect(pickComboTarget(config, id, { now })).toBeNull();
+  });
+  test('successful reprobe settlement releases only the unchanged dispatched target', () => {
+    const { id, config } = setup();
+    const reserved = pickComboTarget(config, id, { now })!;
+    settleComboReprobeSuccess(reserved);
+    expect(isComboTargetInCooldown(id, reserved.target, now)).toBe(false);
+    expect(isComboTargetInCooldown(id, targets[1]!, now)).toBe(true);
+    expect(pickComboTarget(config, id, { now })!.target.model).toBe('test-a');
   });
   for (const wait of [false, true]) {
     test(`a cooled throwing predicate cannot block an available sibling (wait=${wait})`, async () => {

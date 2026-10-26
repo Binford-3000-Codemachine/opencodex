@@ -7,7 +7,7 @@ import { comboProviderFactory } from "../helpers/combo-provider";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
-import { clearComboSelectionState, clearComboTargetCooldowns } from "../../src/combos";
+import { clearComboSelectionState, clearComboTargetCooldowns, coolComboTarget, isComboTargetInCooldown } from "../../src/combos";
 import { clearComboRecallForTests } from "../../src/server/responses/combo-session-recall";
 import { clearKeyCooldowns } from "../../src/providers/key-failover";
 import { clearCodexUpstreamHealth } from "../../src/codex/routing";
@@ -128,6 +128,93 @@ function serve(handler: (request: Request) => Response | Promise<Response>) {
 }
 
 describe("combo cooldown-ready fallback", () => {
+  test("successful reprobe stays exclusive until dispatch succeeds, then releases its target", async () => {
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let hits = 0;
+    const upstream = serve(async () => {
+      hits++;
+      started.resolve();
+      await finish.promise;
+      return Response.json(responsesSuccess("reprobe recovered"));
+    });
+    const target = { provider: "a", model: "m1" };
+    const config = comboConfig({ a: provider("openai-responses", baseUrl(upstream), "key-a") }, [target],
+      { cooldownReprobe: { enabled: true } });
+    coolComboTarget("free", target, { retryAfter: "600", status: 429 });
+    const post = () => handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "combo/free", input: "hello", stream: false }),
+    }), config, { model: "", provider: "" });
+    const pending = post();
+    try {
+      await started.promise;
+      const concurrent = await post();
+      expect(concurrent.status).toBe(503);
+      await concurrent.text();
+      expect(hits).toBe(1);
+      expect(isComboTargetInCooldown("free", target)).toBe(true);
+    } finally { finish.resolve(); }
+    const recovered = await pending;
+    expect(recovered.status).toBe(200);
+    expect(await recovered.text()).toContain("reprobe recovered");
+    expect(isComboTargetInCooldown("free", target)).toBe(false);
+    const later = await post();
+    expect(later.status).toBe(200);
+    await later.text();
+    expect(hits).toBe(2);
+  });
+
+  test("failed single-target reprobe cannot send twice through an identical Retry-After date", async () => {
+    const retryAfter = new Date(Date.now() + 60_000).toUTCString();
+    let hits = 0;
+    const upstream = serve(() => {
+      hits++;
+      return Response.json({ error: { message: "fixture limit", type: "rate_limit_error" } },
+        { status: 429, headers: { "retry-after": retryAfter } });
+    });
+    const target = { provider: "a", model: "m1" };
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(upstream), "key-a") }, [target],
+      { cooldownReprobe: { enabled: true }, waitForCooldownMs: 1 });
+    coolComboTarget("free", target, { retryAfter, status: 429 });
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "combo/free", input: "hello", stream: false }),
+    }), config, { model: "", provider: "" });
+    expect(response.status).toBe(429);
+    await response.text();
+    expect(hits).toBe(1);
+    expect(isComboTargetInCooldown("free", target)).toBe(true);
+  });
+
+  test("a reserved last-resort target survives the server's wait-policy fallback", async () => {
+    let firstHits = 0;
+    let backupHits = 0;
+    customRunTurn = async (_parsed, _incoming, emit) => {
+      firstHits++;
+      emit({ type: "error", status: 429, errorType: "rate_limit_error", message: "fixture limit" });
+    };
+    const backup = serve(() => {
+      backupHits++;
+      return Response.json(responsesSuccess("reserved backup recovered"));
+    });
+    const config = comboConfig({
+      a: provider("test-run-turn", "test://run-turn", "key-a"),
+      b: provider("openai-responses", baseUrl(backup), "key-b"),
+    }, undefined, { cooldownReprobe: { enabled: true }, cooldownWaitPolicy: "before-last-resort", waitForCooldownMs: 0 });
+    config.combos!.free!.targets[1]!.lastResort = true;
+    for (const target of config.combos!.free!.targets) coolComboTarget("free", target, { retryAfter: "600", status: 429 });
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "combo/free", input: "hello", stream: false }),
+    }), config, { model: "", provider: "" });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("reserved backup recovered");
+    expect([firstHits, backupHits]).toEqual([1, 1]);
+    expect(isComboTargetInCooldown("free", config.combos!.free!.targets[0]!)).toBe(true);
+    expect(isComboTargetInCooldown("free", config.combos!.free!.targets[1]!)).toBe(false);
+  });
+
   test("runTurn cooldown-ready heartbeat preserves combo fallback on a final 429", async () => {
     let firstHits = 0;
     let backupHits = 0;

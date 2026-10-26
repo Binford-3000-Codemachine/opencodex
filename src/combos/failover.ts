@@ -13,6 +13,7 @@ import {
 
 interface TargetCooldown {
   cooldownUntil: number;
+  revision: number;
   status?: number;
 }
 
@@ -44,6 +45,8 @@ const HTTP_MONTH_INDEX: Record<string, number> = {
 
 /** Map<`${comboId}\0${provider/model}`, TargetCooldown> */
 const targetCooldowns = new Map<string, TargetCooldown>();
+// Never reset: an in-flight reservation may still refer to an entry cleared from the map.
+let nextCooldownRevision = 0;
 let lastReconciledGeneration = 0;
 let liveComboTargets = new Set<string>();
 
@@ -179,17 +182,24 @@ export function comboTargetCooldownExpiry(
   return entry.cooldownUntil;
 }
 
-/**
- * Lift a target's cooldown only while it is still the exact entry `expectedExpiry` named.
- * A replaced entry is newer failure evidence and survives.
- */
+/** Identity of the current live write, independent of its possibly repeated expiry. */
+export function comboTargetCooldownRevision(
+  comboId: string,
+  target: Pick<OcxComboTarget, "provider" | "model">,
+  now = Date.now(),
+): number | undefined {
+  return isComboTargetInCooldown(comboId, target, now)
+    ? targetCooldowns.get(cooldownMapKey(comboId, target))?.revision : undefined;
+}
+
+/** Lift only the reserved write; a replacement with even the same expiry survives. */
 export function clearComboTargetCooldownIfUnchanged(
   comboId: string,
   target: Pick<OcxComboTarget, "provider" | "model">,
-  expectedExpiry: number,
+  expectedRevision: number,
 ): void {
   const key = cooldownMapKey(comboId, target);
-  if (targetCooldowns.get(key)?.cooldownUntil === expectedExpiry) targetCooldowns.delete(key);
+  if (targetCooldowns.get(key)?.revision === expectedRevision) targetCooldowns.delete(key);
 }
 
 export function isTransientRequestRateLimit(input: {
@@ -291,6 +301,7 @@ export function coolComboTarget(
         message: options?.message,
       }) ? COMBO_REQUEST_RATE_COOLDOWN_MS : DEFAULT_COOLDOWN_MS);
   targetCooldowns.set(cooldownMapKey(comboId, target), {
+    revision: ++nextCooldownRevision,
     // Local fallbacks are capped at ten minutes; explicit server delays at one day.
     cooldownUntil: now + (serverDelayMs ?? Math.min(Math.max(cooldownMs, 1), MAX_COOLDOWN_MS)),
     status: options?.status,
