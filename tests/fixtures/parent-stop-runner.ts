@@ -29,6 +29,8 @@ const options = JSON.parse(readFileSync(0, "utf8")) as {
   handover?: boolean;
   /** The runtime-port record is missing, so the stop can only record a guessed endpoint. */
   noRuntimeRecord?: boolean;
+  /** Like the real readPid, report no PID once the process is gone (a manager stop exited it). */
+  deadPidReadsNull?: boolean;
 };
 if (options.proxyProbePort) {
   // Deliberately bypass every fixture mock for the real proxy-environment regression.
@@ -104,7 +106,7 @@ mock.module("../../src/config/pending-teardown", () => ({
 const state = await import("../../src/config/process-state");
 mock.module("../../src/config/process-state", () => ({
   ...state,
-  readPid: () => options.orphan || options.alreadyStopped ? null : fakePid,
+  readPid: () => options.orphan || options.alreadyStopped || (options.deadPidReadsNull && !alive) ? null : fakePid,
   readRuntimePort: () => options.alreadyStopped || options.noRuntimeRecord ? null : endpoint,
   removePid() {},
   removeRuntimePort() {},

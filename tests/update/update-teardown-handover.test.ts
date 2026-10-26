@@ -80,13 +80,16 @@ describe("handover exit code and update decision", () => {
 
 describe("stop handover predicate", () => {
   const facts = (nonce: string | undefined) => ({
-    requested: true, restoreBlocked: false, nonce, stopFailed: false, recoveredCount: 0, proxy: "stopped",
+    requested: true, restoreBlocked: false, nonce, stopFailed: false, recoveredCount: 0, proxy: "stopped", deferralHonored: true,
   });
 
   test("hands over only this run's own receipt, alone, after a clean stop", () => {
     const own = claimPendingTeardown(ENDPOINT, "exact", process.pid, "update-restart").nonce;
     expect(stopHandsTeardownOver(facts(own))).toBe(true);
     expect(stopHandsTeardownOver({ ...facts(own), proxy: "stopped-orphan" })).toBe(true);
+    // A signal fallback ran the proxy's own exit cleanup, which already restored the pristine catalog.
+    expect(stopHandsTeardownOver({ ...facts(own), deferralHonored: false })).toBe(false);
+    expect(stopHandsTeardownOver({ ...facts(own), proxy: "stopped-orphan", deferralHonored: false })).toBe(false);
     expect(stopHandsTeardownOver({ ...facts(own), requested: false })).toBe(false);
     expect(stopHandsTeardownOver({ ...facts(own), restoreBlocked: true })).toBe(false);
     expect(stopHandsTeardownOver({ ...facts(own), stopFailed: true })).toBe(false);
@@ -210,14 +213,14 @@ describe("ocx stop under an update handover", () => {
   });
 
   test("hands over when the service manager stops the proxy itself", () => {
-    const run = runStop(true, { managerCascades: true });
+    const run = runStop(true, { managerCascades: true, deadPidReadsNull: true });
     expect(run.exitCode, run.stderr).toBe(STOP_TEARDOWN_HANDED_OVER_EXIT_CODE);
     expect(run.calls).toMatchObject({ native: 0, grok: 0, cleared: 0, service: 1 });
     expect(isUpdateHandoverReceipt(run.nonce ?? null)).toBe(true);
   });
 
   test("a manager-stopped ordinary stop still restores", () => {
-    const run = runStop(false, { managerCascades: true });
+    const run = runStop(false, { managerCascades: true, deadPidReadsNull: true });
     expect(run.exitCode, run.stderr).toBe(0);
     expect(run.calls).toMatchObject({ native: 1, grok: 1 });
     expect(receiptNames()).toEqual([]);
@@ -225,6 +228,15 @@ describe("ocx stop under an update handover", () => {
 
   test("without a runtime record the stop restores instead of handing over a guessed receipt", () => {
     const run = runStop(true, { noRuntimeRecord: true, nativeSignal: true });
+    expect(run.exitCode, run.stderr).toBe(0);
+    expect(run.calls).toMatchObject({ native: 1, grok: 1 });
+    expect(receiptNames()).toEqual([]);
+  });
+
+  test("a failed /api/stop that falls back to a signal restores instead of claiming a handover", () => {
+    // Exact runtime endpoint, but the proxy answers 503 before honoring the deferral, so the
+    // stop falls back to a signal and the proxy's own exit cleanup is what ran.
+    const run = runStop(true, { apiFailure: true, status: 503, response: { error: "unavailable" }, nativeSignal: true });
     expect(run.exitCode, run.stderr).toBe(0);
     expect(run.calls).toMatchObject({ native: 1, grok: 1 });
     expect(receiptNames()).toEqual([]);

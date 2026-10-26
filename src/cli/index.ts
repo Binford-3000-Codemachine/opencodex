@@ -1136,6 +1136,7 @@ async function handleStopUnlocked(snapshot?: GuardedStopSnapshot) {
   let teardownNonce: string | undefined;
   // #7423: an update that restarts the proxy asks this stop to leave Codex routing for the replacement.
   const handoverRequested = updateTeardownHandoverRequested() && !stoppingSibling && !connectedClientSkip;
+  let deferralHonoredByProxy = false;
   const claimTeardown = (endpoint: { hostname: string; port: number }, endpointSource: "exact" | "guessed") => {
     if (teardownNonce || stoppingSibling) return;
     if (connectedClientSkip) return;
@@ -1167,7 +1168,8 @@ async function handleStopUnlocked(snapshot?: GuardedStopSnapshot) {
     // A valid receipt means the proxy deferred shared teardown to this process. If the
     // receipt could not be written, the proxy restores it itself and the caller must not
     // attempt a second restore after a graceful stop. A hard-kill always leaves restore
-    // to this process.
+    // to this process. #7423: only a confirmed deferral kept the proxy's own exit cleanup off.
+    if (graceful && teardownNonce) deferralHonoredByProxy = true;
     return graceful && !teardownNonce;
   };
   const approvedEndpoint = snapshot
@@ -1435,7 +1437,7 @@ async function handleStopUnlocked(snapshot?: GuardedStopSnapshot) {
   if (connectedClientSkip) console.log(connectedClientSkip);
   const restoreBlocked = ownershipBlocked || inheritedBlocks || nativeRestoreHandledByProxy || stoppingSibling || connectedClientSkip !== null;
   const handedOver = stopHandsTeardownOver({ requested: handoverRequested, restoreBlocked, nonce: teardownNonce,
-    stopFailed, recoveredCount: recoveredNonces.length, proxy: record.proxy, service: record.service });
+    stopFailed, recoveredCount: recoveredNonces.length, proxy: record.proxy, service: record.service, deferralHonored: deferralHonoredByProxy });
   if (handedOver) announceStopHandover();
   else if (!restoreBlocked) {
     if (recoveredNonces.length > 0) {

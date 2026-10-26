@@ -61,6 +61,12 @@ export type StopHandoverFacts = {
   proxy: string;
   /** What the service-manager stop returned; a manager can take the proxy down itself. */
   service?: string;
+  /**
+   * The proxy this run stopped answered `deferred` before exiting. Any fallback (a failed
+   * or unconfirmed /api/stop, then a signal) lets a standalone proxy's exit cleanup restore
+   * native Codex and the pristine catalog, so nothing is left to hand over.
+   */
+  deferralHonored?: boolean;
 };
 
 /**
@@ -76,7 +82,7 @@ export type StopHandoverFacts = {
  */
 export function stopHandsTeardownOver(facts: StopHandoverFacts): boolean {
   const managerStopped = facts.service === "stopped" || facts.service === "stopped-respawnable";
-  const proxyDown = facts.proxy === "stopped" || facts.proxy === "stopped-orphan"
+  const proxyDown = ((facts.proxy === "stopped" || facts.proxy === "stopped-orphan") && facts.deferralHonored === true)
     || (facts.proxy === "not-running" && managerStopped);
   return facts.requested && !facts.restoreBlocked && facts.nonce !== undefined && !facts.stopFailed
     && facts.recoveredCount === 0 && proxyDown && pendingTeardownsAreExactly([facts.nonce])
