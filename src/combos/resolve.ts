@@ -3,7 +3,6 @@ import { getCachedProviderRoutingQuota } from "../providers/quota-routing-cache"
 import type { ProviderQuota, ProviderQuotaWindow } from "../providers/quota-types";
 import { sleepWithAbort } from "../lib/upstream-retry";
 import {
-  clearComboTargetCooldowns,
   coolComboTarget,
   earliestComboCooldown,
   isComboTargetInCooldown,
@@ -24,6 +23,8 @@ export interface ComboPick {
   targetIndex: number;
   attempted: string[];
   writerGeneration: number;
+  /** Cooled targets this request alone may probe during its recovery pass. */
+  cooldownReprobeTargets?: string[];
 }
 
 interface SelectionState {
@@ -288,11 +289,11 @@ function resetWindowIndex(
   return selected;
 }
 
-/** Reserve one recovery pass before mutating cooldowns; preview and in-flight picks never call this. */
-function reopenAllCooledTargets(
+/** Reserve one request-scoped recovery pass; preview and in-flight picks never call this. */
+function reserveAllCooledTargets(
   config: OcxConfig, comboId: string, now: number,
   eligible?: (target: NormalizedComboTarget) => boolean,
-): void {
+): Set<string> | undefined {
   const combo = getCombo(config, comboId);
   if (!combo?.cooldownReprobe?.enabled) return;
   const state = selectionState.get(comboId);
@@ -312,8 +313,9 @@ function reopenAllCooledTargets(
   const next = state ?? { successes: 0, currentWeights: new Map<string, number>(), successfulUses: new Map<string, number>() };
   next.lastCooldownReprobeAt = now;
   selectionState.set(comboId, next);
-  clearComboTargetCooldowns(comboId, usable.map(targetKey));
-  console.warn(`[combo] ${comboId}: reopening all-cooled targets; minimum reprobe interval ${combo.cooldownReprobe.intervalMs}ms`);
+  const reserved = new Set(usable.map(targetKey));
+  console.warn(`[combo] ${comboId}: reserving all-cooled targets for one request; minimum reprobe interval ${combo.cooldownReprobe.intervalMs}ms`);
+  return reserved;
 }
 
 export function pickComboTarget(
@@ -324,6 +326,8 @@ export function pickComboTarget(
     eligible?: (target: NormalizedComboTarget) => boolean;
     /** Disable recovery for picks without request context or picks already in flight. */
     allowCooldownReprobe?: boolean;
+    /** Request-scoped targets allowed to bypass their shared cooldown. */
+    cooldownReprobeTargets?: Iterable<string>;
     now?: number;
     /** Inspect a round-robin choice without mutating its sticky/weight state. */
     preview?: boolean;
@@ -334,12 +338,15 @@ export function pickComboTarget(
   if (!combo) throw new UnknownComboError(comboId);
   const excluded = new Set(options.exclude ?? []);
   const now = options.now ?? Date.now();
+  const cooldownReprobeTargets = new Set(options.cooldownReprobeTargets);
   if (options.allowCooldownReprobe !== false && !options.preview && excluded.size === 0) {
-    reopenAllCooledTargets(config, comboId, now, options.eligible);
+    for (const key of reserveAllCooledTargets(config, comboId, now, options.eligible) ?? []) {
+      cooldownReprobeTargets.add(key);
+    }
   }
   const eligible = (target: NormalizedComboTarget): boolean =>
     targetProviderIsUsable(config, target, now)
-    && !isComboTargetInCooldown(comboId, target, now)
+    && (cooldownReprobeTargets.has(targetKey(target)) || !isComboTargetInCooldown(comboId, target, now))
     && !excluded.has(targetKey(target))
     && (options.eligible?.(target) ?? true);
 
@@ -417,6 +424,7 @@ export function pickComboTarget(
     targetIndex,
     attempted: [...excluded, targetKey(target)],
     writerGeneration,
+    ...(cooldownReprobeTargets.size > 0 ? { cooldownReprobeTargets: [...cooldownReprobeTargets] } : {}),
   };
 }
 
@@ -519,8 +527,8 @@ export function advanceComboAfterFailure(
   return pickComboTarget(config, pick.comboId, {
     exclude: pick.attempted,
     now: options.now,
-    eligible: target => !isComboTargetInCooldown(pick.comboId, target, options.now)
-      && (options.eligible?.(target) ?? true)
+    cooldownReprobeTargets: pick.cooldownReprobeTargets,
+    eligible: target => (options.eligible?.(target) ?? true)
       && (!defersLastResort || !target.lastResort),
   });
 }
@@ -542,8 +550,9 @@ export async function pickComboTargetWithWait(
   const now = options.now ?? Date.now();
   const excluded = new Set(options.exclude ?? []);
   const customEligible = options.eligible;
+  let cooldownReprobeTargets: Set<string> | undefined;
   if (options.allowCooldownReprobe !== false && excluded.size === 0 && !options.abortSignal?.aborted) {
-    reopenAllCooledTargets(config, comboId, now, customEligible);
+    cooldownReprobeTargets = reserveAllCooledTargets(config, comboId, now, customEligible);
   }
   const eligibleAt = (target: NormalizedComboTarget, at: number): boolean =>
     !isComboTargetInCooldown(comboId, target, at)
@@ -567,9 +576,10 @@ export async function pickComboTargetWithWait(
     && policyCombo.targets.some(target => !target.lastResort);
   if (defersLastResort && !options.abortSignal?.aborted) {
     const normalOnly = (target: NormalizedComboTarget): boolean =>
-      !target.lastResort && eligible(target);
+      !target.lastResort && (customEligible?.(target) ?? true);
     const normalPick = pickComboTarget(config, comboId, {
       allowCooldownReprobe: false,
+      cooldownReprobeTargets,
       exclude: excluded,
       eligible: normalOnly,
       now,
@@ -619,8 +629,9 @@ export async function pickComboTargetWithWait(
 
   const pick = pickComboTarget(config, comboId, {
     allowCooldownReprobe: false,
+    cooldownReprobeTargets,
     exclude: excluded,
-    eligible: target => eligibleAt(target, clock),
+    eligible: customEligible,
     now: clock,
   });
   if (pick || remainingWaitMs <= 0 || options.abortSignal?.aborted) return pick;

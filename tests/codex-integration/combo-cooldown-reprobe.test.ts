@@ -55,8 +55,7 @@ describe('opt-in cooldown recovery', () => {
   });
   test('available targets prevent a reset of siblings', () => {
     const { id, config } = setup();
-    pickComboTarget(config, id, { now });
-    coolComboTarget(id, targets[0]!, { now, retryAfter: '36000', status: 402 });
+    clearComboTargetCooldowns(id, ['openai/test-b']);
     expect(pickComboTarget(config, id, { now })!.target.model).toBe('test-b');
     expect(isComboTargetInCooldown(id, targets[0]!, now)).toBe(true);
   });
@@ -64,8 +63,20 @@ describe('opt-in cooldown recovery', () => {
     const { id, config } = setup();
     const pick = pickComboTarget(config, id, { now, eligible: target => target.model === 'test-a' });
     expect(pick!.target.model).toBe('test-a');
-    expect(isComboTargetInCooldown(id, targets[0]!, now)).toBe(false);
+    expect(isComboTargetInCooldown(id, targets[0]!, now)).toBe(true);
     expect(isComboTargetInCooldown(id, targets[1]!, now)).toBe(true);
+  });
+  test('a reserved pass does not make cooled targets visible to concurrent requests', () => {
+    const { id, config } = setup();
+    const reserved = pickComboTarget(config, id, { now })!;
+    expect(reserved.target.model).toBe('test-a');
+    expect(isComboTargetInCooldown(id, targets[0]!, now)).toBe(true);
+    expect(pickComboTarget(config, id, { now })).toBeNull();
+    const second = advanceComboAfterFailure(config, reserved, {
+      now, status: 429, retryAfter: '36000', cooldownScope: 'target',
+    });
+    expect(second!.target.model).toBe('test-b');
+    expect(pickComboTarget(config, id, { now })).toBeNull();
   });
   for (const wait of [false, true]) {
     test(`a cooled throwing predicate cannot block an available sibling (wait=${wait})`, async () => {
