@@ -422,14 +422,21 @@ return {pinImmediate:await resolveCase('pin','immediate'),pinInflight:await reso
   valid:await resolveCase('valid','entered')};
 "#,
     );
-    for name in ["pinImmediate","pinInflight","clearImmediate","clearInflight","stopImmediate","stopInflight"] {
+    for name in [
+        "pinImmediate",
+        "pinInflight",
+        "clearImmediate",
+        "clearInflight",
+        "stopImmediate",
+        "stopInflight",
+    ] {
         assert_eq!(result[name]["accepted"], false);
         assert_eq!(result[name]["written"], false);
     }
     assert_eq!(result["valid"]["accepted"], true);
     assert_eq!(result["valid"]["version"], "0.160.0");
     // An in-flight mutation only exercises the guard if the executor was actually running.
-    for name in ["pinInflight","clearInflight","stopInflight","valid"] {
+    for name in ["pinInflight", "clearInflight", "stopInflight", "valid"] {
         assert_eq!(result[name]["outcome"], "entered");
     }
 }
