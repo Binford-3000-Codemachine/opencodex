@@ -7,8 +7,8 @@ import { isSpawnableCodexCandidate } from "./exec-invocation";
 import type { SpawnInvocation } from "../lib/win-exec";
 import {
   CodexExecTrustError,
-  validatedCodexExecInvocation,
-  validatedCodexExecInvocationAsync,
+  validatedCodexExecTarget,
+  validatedCodexExecTargetAsync,
 } from "./exec-boundary";
 import { macCodexAppBundleFor, macCodexAppCommands } from "./mac-app-bundle";
 import { resolveCodexHomeDir } from "./home";
@@ -437,7 +437,7 @@ export function clearPersistedCodexRuntime(deps: ResolveCodexRuntimeDeps = {}): 
   }
 }
 
-type VersionProbeResult = { ok: true; version: string | null } | { ok: false; reason: string };
+type VersionProbeResult = { ok: true; version: string | null; macAppBundle?: boolean } | { ok: false; reason: string };
 
 /** Checks that need no exec; a non-null answer settles the candidate without running `--version`. */
 function versionProbePrecheck(command: string, deps: ResolveCodexRuntimeDeps): VersionProbeResult | null {
@@ -487,10 +487,10 @@ function versionProbeInvocation(deps: ResolveCodexRuntimeDeps, probeHome: string
   };
 }
 
-function versionProbeOutput(output: string): VersionProbeResult {
+function versionProbeOutput(output: string, macAppBundle: boolean): VersionProbeResult {
   const version = parseCodexVersionOutput(output);
   if (!version) return { ok: false, reason: "unrecognized --version output" };
-  return { ok: true, version };
+  return { ok: true, version, macAppBundle };
 }
 
 function versionProbeError(error: unknown, probeHome: string | undefined): VersionProbeResult {
@@ -521,9 +521,9 @@ function probeVersion(command: string, deps: ResolveCodexRuntimeDeps): VersionPr
   let probeHome: string | undefined;
   try {
     probeHome = mkdtempSync(join(tmpdir(), "ocx-codex-probe-"));
-    const { file, args, options } = versionProbeInvocation(deps, probeHome,
-      validatedCodexExecInvocation(command, ["--version"], codexExecBoundaryDeps(deps)));
-    return versionProbeOutput(exec(file, args, options));
+    const target = validatedCodexExecTarget(command, ["--version"], codexExecBoundaryDeps(deps));
+    const { file, args, options } = versionProbeInvocation(deps, probeHome, target.invocation);
+    return versionProbeOutput(exec(file, args, options), target.macAppBundle);
   } catch (error) {
     if (error instanceof CodexExecTrustError) return { ok: false, reason: error.message };
     return versionProbeError(error, probeHome);
@@ -586,13 +586,13 @@ async function probeVersionAsync(command: string, deps: ResolveCodexRuntimeDeps)
   let probeHome: string | undefined;
   try {
     probeHome = mkdtempSync(join(tmpdir(), "ocx-codex-probe-"));
-    const { file, args, options } = versionProbeInvocation(deps, probeHome,
-      await validatedCodexExecInvocationAsync(command, ["--version"], {
-        ...codexExecBoundaryDeps(deps),
-        macBundleTrustReasonAsync: deps.macBundleTrustReasonAsync,
-        signal: deps.signal,
-      }));
-    return versionProbeOutput(await exec(file, args, { ...options, signal: deps.signal }));
+    const target = await validatedCodexExecTargetAsync(command, ["--version"], {
+      ...codexExecBoundaryDeps(deps),
+      macBundleTrustReasonAsync: deps.macBundleTrustReasonAsync,
+      signal: deps.signal,
+    });
+    const { file, args, options } = versionProbeInvocation(deps, probeHome, target.invocation);
+    return versionProbeOutput(await exec(file, args, { ...options, signal: deps.signal }), target.macAppBundle);
   } catch (error) {
     if (error instanceof CodexExecTrustError) return { ok: false, reason: error.message };
     return versionProbeError(error, probeHome);
@@ -1222,6 +1222,7 @@ function* resolveCodexRuntimeSteps(
 
   const seen = new Set<string>();
   const valid: ResolvedCodexRuntime[] = [];
+  const probedAppCommands = new Set<string>();
   // A caller that declined PATH-wide discovery normally gets the first valid
   // candidate and nothing else, which is right for a hot path and wrong for
   // exactly one arrangement: an unpinned persisted selection sitting in front of
@@ -1259,6 +1260,9 @@ function* resolveCodexRuntimeSteps(
       continue;
     }
     valid.push({ command: candidate.command, version: probed.version, source: candidate.source });
+    // Keep the actual executed target's classification, including a bare PATH alias.
+    // Deferred candidates have no version and cannot trigger a version-based takeover.
+    if (probed.macAppBundle) probedAppCommands.add(candidate.command);
   }
 
   if (valid.length === 0) {
@@ -1309,7 +1313,7 @@ function* resolveCodexRuntimeSteps(
         const newerDiscovered = valid
           .filter(item =>
             !sameRuntimeCommand(item.command, selected.command)
-            && !macCodexAppBundleFor(item.command, deps)
+            && !probedAppCommands.has(item.command)
             && typeof item.version === "string"
             && typeof selected.version === "string"
             && compareCodexVersions(item.version, selected.version) > 0)

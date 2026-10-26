@@ -18,7 +18,8 @@ beforeEach(() => {
   mkdirSync(repoPath(".tmp"), { recursive: true });
   root = mkdtempSync(repoPath(".tmp/catalog-async-"));
   selected = { command: join(root, "codex.exe"), version: "0.160.0", source: "environment" };
-  writeFileSync(selected.command, "synthetic executable");
+  // Darwin's execution boundary checks X_OK before the mocked executor is called.
+  writeFileSync(selected.command, "synthetic executable", { mode: 0o700 });
   saved = Object.fromEntries(["OPENCODEX_HOME", "CODEX_HOME", "CODEX_CLI_PATH"].map(key => [key, process.env[key]]));
   process.env.OPENCODEX_HOME = root;
   process.env.CODEX_HOME = join(root, "codex-home");
@@ -140,9 +141,12 @@ test("a scoped source abort does not cancel an independent shared model flight",
 
 test("scoped flight abort propagates to its executor and cannot publish late output", async () => {
   const held = hold<string>();
+  const entered = hold<void>();
   const controller = new AbortController();
   let signal: AbortSignal | undefined;
-  const pending = bundled.loadBundledCodexCatalogAsync({ commandCandidates: () => [selected.command], execFile: (_file, _args, options) => { signal = options.signal; return held.promise; } }, () => true, controller.signal);
+  const pending = bundled.loadBundledCodexCatalogAsync({ commandCandidates: () => [selected.command], execFile: (_file, _args, options) => { signal = options.signal; entered.resolve(); return held.promise; } }, () => true, controller.signal);
+  // The async exec boundary yields first; this case aborts an executor already in flight.
+  await Promise.race([entered.promise, pending.then(() => { throw new Error("catalog settled before executor entry"); })]);
   controller.abort();
   expect(await pending).toBeNull();
   expect(signal?.aborted).toBe(true);
@@ -280,7 +284,7 @@ test("a new shared selection aborts obsolete model work and refuses its late pub
   const obsolete = bundled.loadBundledCodexCatalogAsync();
   await started.promise;
   process.env.CODEX_CLI_PATH = join(root, "next.exe");
-  writeFileSync(process.env.CODEX_CLI_PATH, "synthetic executable");
+  writeFileSync(process.env.CODEX_CLI_PATH, "synthetic executable", { mode: 0o700 });
   const next = bundled.loadBundledCodexCatalogAsync();
   expect(oldSignal?.aborted).toBe(true);
   held.resolve(JSON.stringify(catalog));

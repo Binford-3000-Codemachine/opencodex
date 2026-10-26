@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +10,7 @@ import {
   type CodexExecBoundaryAsyncDeps,
   type CodexExecBoundaryDeps,
 } from "../../src/codex/exec-boundary";
-import { resolveCodexRuntime, resolveCodexRuntimeAsync, type ResolveCodexRuntimeDeps } from "../../src/codex/runtime";
+import { codexRuntimeStatePath, resolveCodexRuntime, resolveCodexRuntimeAsync, type ResolveCodexRuntimeDeps } from "../../src/codex/runtime";
 import { loadBundledCodexCatalog, loadBundledCodexCatalogAsync } from "../../src/codex/catalog/bundled";
 import { codexFeaturesInvocation } from "../../src/cli/v2";
 import {
@@ -129,6 +129,40 @@ describe("macOS Codex exec boundary", () => {
     expect(invocation.file).toBe(APP_BIN);
     expect(h.syncCalls).toEqual([[BUNDLE, APP_BIN]]);
   });
+
+  for (const asyncMode of [false, true]) for (const bundled of [false, true]) {
+    test(`bare fallback keeps its executed bundle classification (async=${asyncMode}, bundled=${bundled})`, async () => {
+      const h = harness(), persisted = "/fixture/persisted/codex", fallback = "/usr/bin/codex";
+      // No PATH enumeration: the bare fallback resolves through Darwin's default execvp path.
+      delete h.env.PATH;
+      for (const file of [persisted, fallback]) { h.files.add(file); h.runnable.add(file); }
+      if (bundled) { h.addApp(); h.links.set(fallback, APP_BIN); }
+      writeFileSync(codexRuntimeStatePath(h.resolve.configDir!), JSON.stringify({
+        version: 1, command: persisted, source: "installed", origin: "discovered",
+        selectedVersion: "0.150.0", updatedAt: "2026-10-13T00:00:00Z",
+      }));
+      const exec = (file: string) => {
+        h.spawned.push(file);
+        if (file === persisted) return "codex-cli 0.150.0";
+        expect(file).toBe(bundled ? APP_BIN : fallback);
+        // Selection must use this execution's evidence, not resolve the changed PATH again.
+        h.env.PATH = "/after/probe";
+        return "codex-cli 0.162.0";
+      };
+      const deps = { ...h.resolve, execFileSync: exec, execFile: async (file: string) => exec(file) };
+      const result = asyncMode ? await resolveCodexRuntimeAsync(deps) : resolveCodexRuntime(deps);
+      expect(result.runtime).toEqual(bundled
+        ? { command: persisted, source: "configured", version: "0.150.0" }
+        : { command: "codex", source: "fallback", version: "0.162.0" });
+      expect(result.replacedConfigured).toBeUndefined();
+      if (bundled) expect(result.supersededDiscovered).toBeUndefined();
+      else expect(result.supersededDiscovered?.to).toEqual(result.runtime);
+      expect(h.spawned).toContain(persisted);
+      expect(h.spawned).toContain(bundled ? APP_BIN : fallback);
+      expect(asyncMode ? h.syncCalls : h.asyncCalls).toEqual([]);
+      if (bundled) expect(asyncMode ? h.asyncCalls : h.syncCalls).toContainEqual([BUNDLE, APP_BIN]);
+    });
+  }
 
   test("a bundle member that cannot be canonicalized refuses instead of escaping the check", () => {
     const h = harness(); h.addApp(); h.unresolvable.add(APP_BIN);

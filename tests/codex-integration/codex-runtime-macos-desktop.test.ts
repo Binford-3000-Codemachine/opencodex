@@ -198,13 +198,17 @@ describe.skipIf(process.platform === "win32")("macOS Codex app runtime discovery
     expect(reads).toBeGreaterThan(0);
   });
 
-  test("a canonical app path on PATH under a symlinked HOME never takes over a persisted selection", () => {
+  test("a canonical app path on PATH under a symlinked HOME never takes over a persisted selection", async () => {
     const f = symlinkedHome(), persisted = "/fixture/persisted/codex";
     f.pin(persisted, "discovered"); f.versions.set(persisted, "0.150.0"); f.versions.set(f.canonical, "0.162.0");
     f.deps.env!.PATH = posix.dirname(f.canonical);
     const result = resolveCodexRuntime(f.deps);
     expect(result.runtime.command).toBe(persisted);
     expect(result.supersededDiscovered).toBeUndefined();
+    expect(result.replacedConfigured).toBeUndefined();
+    expect(f.probed).toContain(persisted);
+    expect(f.probed).toContain(f.canonical);
+    expect(await resolveCodexRuntimeAsync(f.deps)).toEqual(result);
   });
 
   test("an established install path that links into the app keeps its precedence", () => {

@@ -127,13 +127,19 @@ function darwinBundleTarget(resolved: string, deps: CodexExecBoundaryDeps): { bu
   return { bundle: realpath(bundle) ?? bundle, binary };
 }
 
-export function validatedCodexExecInvocation(
+/** Classification of this exact validated invocation, not a reusable trust grant. */
+interface ValidatedCodexExecTarget {
+  readonly invocation: SpawnInvocation;
+  readonly macAppBundle: boolean;
+}
+
+export function validatedCodexExecTarget(
   command: string,
   args: readonly string[],
   deps: CodexExecBoundaryDeps = {},
-): SpawnInvocation {
+): ValidatedCodexExecTarget {
   if ((deps.platform ?? process.platform) !== "darwin") {
-    return codexExecInvocation(command, args, deps.platform ?? process.platform, { env: deps.env, exists: deps.exists });
+    return { invocation: codexExecInvocation(command, args, deps.platform ?? process.platform, { env: deps.env, exists: deps.exists }), macAppBundle: false };
   }
   const resolved = resolveDarwinExecPath(command, deps);
   if ("error" in resolved) throw resolved.error;
@@ -141,19 +147,19 @@ export function validatedCodexExecInvocation(
   if (target) {
     const reason = (deps.macBundleTrustReason ?? untrustedChatgptBundleReason)(target.bundle, target.binary);
     if (reason) throw new CodexExecTrustError(reason);
-    return { file: target.binary, args: [...args], options: {} };
+    return { invocation: { file: target.binary, args: [...args], options: {} }, macAppBundle: true };
   }
-  return { file: resolved.path, args: [...args], options: {} };
+  return { invocation: { file: resolved.path, args: [...args], options: {} }, macAppBundle: false };
 }
 
-export async function validatedCodexExecInvocationAsync(
+export async function validatedCodexExecTargetAsync(
   command: string,
   args: readonly string[],
   deps: CodexExecBoundaryAsyncDeps = {},
-): Promise<SpawnInvocation> {
+): Promise<ValidatedCodexExecTarget> {
   deps.signal?.throwIfAborted();
   if ((deps.platform ?? process.platform) !== "darwin") {
-    return codexExecInvocation(command, args, deps.platform ?? process.platform, { env: deps.env, exists: deps.exists });
+    return { invocation: codexExecInvocation(command, args, deps.platform ?? process.platform, { env: deps.env, exists: deps.exists }), macAppBundle: false };
   }
   const resolved = resolveDarwinExecPath(command, deps);
   if ("error" in resolved) throw resolved.error;
@@ -164,10 +170,24 @@ export async function validatedCodexExecInvocationAsync(
       : untrustedChatgptBundleReasonAsync(target.bundle, target.binary, undefined, deps.signal));
     if (reason) throw new CodexExecTrustError(reason);
     deps.signal?.throwIfAborted();
-    return { file: target.binary, args: [...args], options: {} };
+    return { invocation: { file: target.binary, args: [...args], options: {} }, macAppBundle: true };
   }
   deps.signal?.throwIfAborted();
-  return { file: resolved.path, args: [...args], options: {} };
+  return { invocation: { file: resolved.path, args: [...args], options: {} }, macAppBundle: false };
+}
+
+export function validatedCodexExecInvocation(
+  command: string, args: readonly string[], deps: CodexExecBoundaryDeps = {},
+): SpawnInvocation {
+  return validatedCodexExecTarget(command, args, deps).invocation;
+}
+
+export async function validatedCodexExecInvocationAsync(
+  command: string, args: readonly string[], deps: CodexExecBoundaryAsyncDeps = {},
+): Promise<SpawnInvocation> {
+  const target = await validatedCodexExecTargetAsync(command, args, deps);
+  deps.signal?.throwIfAborted();
+  return target.invocation;
 }
 
 /** Assert a single already-located executable; returns the canonical target to exec. */
