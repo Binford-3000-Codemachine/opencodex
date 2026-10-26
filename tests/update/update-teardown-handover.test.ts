@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,8 @@ import {
   dischargeUpdateTeardownHandovers,
   forgetUpdateTeardownHandover,
   stopHandsTeardownOver,
+  updateTeardownHandoverPending,
+  updateTeardownHandoverRequested,
   UPDATE_TEARDOWN_HANDOVER_ENV,
 } from "../../src/update/teardown-handover";
 import type { OcxConfig } from "../../src/types";
@@ -241,6 +244,76 @@ describe("ocx stop under an update handover", () => {
     expect(run.calls).toMatchObject({ native: 1, grok: 1 });
     expect(receiptNames()).toEqual([]);
   });
+});
+
+describe("startup journal recovery under a handover", () => {
+  test("a pending handover is a valid, exact, abandoned handover receipt", () => {
+    expect(updateTeardownHandoverPending(DEAD)).toBe(false);
+    claimPendingTeardown(ENDPOINT, "exact", 4242);
+    expect(updateTeardownHandoverPending(DEAD)).toBe(false);
+    const guessed = claimPendingTeardown(ENDPOINT, "guessed", 4242, "update-restart").nonce;
+    expect(updateTeardownHandoverPending(DEAD)).toBe(false);
+    rmSync(pendingTeardownPathFor(guessed), { force: true });
+    claimPendingTeardown(ENDPOINT, "exact", 4242, "update-restart");
+    expect(updateTeardownHandoverPending(() => true)).toBe(false);
+    expect(updateTeardownHandoverPending(DEAD)).toBe(true);
+  });
+
+  test("the stop asks for a handover only when the replacement will run its startup sync", () => {
+    const env = { [UPDATE_TEARDOWN_HANDOVER_ENV]: "1" };
+    expect(updateTeardownHandoverRequested(env, () => true)).toBe(true);
+    expect(updateTeardownHandoverRequested(env, () => false)).toBe(false);
+    expect(updateTeardownHandoverRequested(env, () => { throw new Error("unreadable config"); })).toBe(false);
+    expect(updateTeardownHandoverRequested({}, () => true)).toBe(false);
+  });
+
+  // The restarted proxy reconciles the previous proxy's journal before its first sync. Its
+  // owner PID is dead, so without adoption it restores native config for that interval.
+  for (const handover of [true, false]) {
+    test(`startup ${handover ? "adopts" : "restores"} a dead proxy's journal ${handover ? "with" : "without"} a pending handover`, () => {
+      const codexHome = mkdtempSync(join(tmpdir(), "ocx-handover-codex-"));
+      try {
+        const configPath = join(codexHome, "config.toml");
+        const journalPath = join(codexHome, "opencodex-journal.json");
+        const original = '# original\nmodel_provider = "openai"\n';
+        const injected = '# injected\nmodel_provider = "opencodex"\n';
+        writeFileSync(configPath, injected);
+        writeFileSync(journalPath, JSON.stringify({
+          version: 1,
+          originalConfig: Buffer.from(original).toString("base64"),
+          originalProfile: null,
+          injectedConfigHash: createHash("sha256").update(injected).digest("hex"),
+          injectedProfileHash: null,
+          owner: { kind: "process", pid: 999_999 },
+          pid: 999_999,
+          timestamp: new Date().toISOString(),
+        }));
+        if (handover) claimPendingTeardown(ENDPOINT, "exact", 999_998, "update-restart");
+        const child = spawnSync(process.execPath, ["--eval",
+          'const { reconcileStartupJournal } = require("./src/cli/cross-home-owner"); reconcileStartupJournal(); console.log(JSON.stringify({ pid: process.pid }));'], {
+          cwd: repoPath(),
+          env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: home },
+          encoding: "utf8",
+          timeout: 60_000,
+          windowsHide: true,
+        });
+        expect(child.status, child.stderr).toBe(0);
+        const childPid = (JSON.parse(child.stdout.trim().split("\n").at(-1)!) as { pid: number }).pid;
+        if (handover) {
+          expect(readFileSync(configPath, "utf8")).toBe(injected);
+          const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { pid: number; owner: { pid: number }; originalConfig: string };
+          expect(journal.pid).toBe(childPid);
+          expect(journal.owner.pid).toBe(childPid);
+          // The user's baseline survives the ownership change, so a later stop restores it.
+          expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toBe(original);
+        } else {
+          expect(readFileSync(configPath, "utf8")).toBe(original);
+        }
+      } finally {
+        removeTreeWithRetry(codexHome);
+      }
+    });
+  }
 });
 
 describe("startup publication", () => {

@@ -6,6 +6,8 @@ import {
   pendingTeardownsAreExactly,
   readPendingTeardown,
 } from "../config/pending-teardown";
+import { isLikelyOcxProcess } from "../config/process-state";
+import { isProcessAlive } from "../lib/process-control";
 
 /**
  * Update teardown handover (#7423).
@@ -26,8 +28,32 @@ import {
  */
 export const UPDATE_TEARDOWN_HANDOVER_ENV = "OCX_UPDATE_TEARDOWN_HANDOVER";
 
-export function updateTeardownHandoverRequested(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[UPDATE_TEARDOWN_HANDOVER_ENV] === "1";
+/**
+ * `publishesOnStart` answers whether the restarted proxy will run its startup Codex sync.
+ * Without one it can never discharge the receipt, so the stop restores as usual; an
+ * unreadable answer is treated the same way.
+ */
+export function updateTeardownHandoverRequested(
+  env: NodeJS.ProcessEnv = process.env,
+  publishesOnStart: () => boolean = () => true,
+): boolean {
+  if (env[UPDATE_TEARDOWN_HANDOVER_ENV] !== "1") return false;
+  try { return publishesOnStart(); } catch { return false; }
+}
+
+/** An identity-aware "is that stop still running", the rule handleStop uses for receipts. */
+export function teardownOwnerStillRunning(pid: number): boolean {
+  return isProcessAlive(pid) && isLikelyOcxProcess(pid);
+}
+
+/**
+ * Is an update handover waiting for this starting proxy? True when a valid, exact handover
+ * receipt exists whose stop has exited: that stop kept Codex routing for the replacement.
+ */
+export function updateTeardownHandoverPending(ownerStillRunning: (pid: number) => boolean = teardownOwnerStillRunning): boolean {
+  return listPendingTeardowns().some(read => read.state === "valid"
+    && read.receipt.handover === "update-restart" && read.receipt.endpointSource === "exact"
+    && isPendingTeardownAbandoned(read, ownerStillRunning));
 }
 
 /** The environment for an update child whose caller will restart the proxy afterwards. */

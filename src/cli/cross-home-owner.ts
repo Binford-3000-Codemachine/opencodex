@@ -9,6 +9,7 @@ import { detectCodexRoutingDrift } from "../codex/routing-drift";
 import { readBoundedCodexConfig } from "../codex/inject/bounded-config-reader";
 import { currentExternalCodexModelProvider } from "../codex/inject";
 import { reconcileJournal } from "../codex/journal";
+import { updateTeardownHandoverPending } from "../update/teardown-handover";
 import { markSiblingStart, siblingOfLivePort } from "../codex/sibling-start";
 import { readClientConnectionState } from "../client/state";
 import { findManagedRegion, resolveGrokHome } from "../grok/inject";
@@ -350,5 +351,5 @@ export function reconcileStartupJournal(): void {
   const clientState = readClientConnectionState();
   reconcileJournal(clientState.kind === "connected"
     ? { activeClientApiKeyId: clientState.value.apiKeyId }
-    : undefined);
+    : { adoptUpdateHandover: updateTeardownHandoverPending() });
 }

@@ -144,7 +144,7 @@ import {
   StartOwnershipRollbackUncertainError,
 } from "./start-ownership-publication";
 import { syncModelsToCodex } from "../codex/sync";
-import { localClientSkipReason, shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
+import { localClientSkipReason, shouldSyncCodexOnStart, shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
 import { honorSiblingMarker, markSiblingStart, siblingOfLivePort, siblingRuntimeField, siblingStopFoundOwner, withoutSiblingMarker } from "../codex/sibling-start";
 import { consumeSiblingHandoff } from "../codex/sibling-handoff";
 import {
@@ -1135,7 +1135,7 @@ async function handleStopUnlocked(snapshot?: GuardedStopSnapshot) {
     .filter(read => isPendingTeardownAbandoned(read, teardownOwnerStillRunning));
   let teardownNonce: string | undefined;
   // #7423: an update that restarts the proxy asks this stop to leave Codex routing for the replacement.
-  const handoverRequested = updateTeardownHandoverRequested() && !stoppingSibling && !connectedClientSkip;
+  const handoverRequested = updateTeardownHandoverRequested(process.env, () => shouldSyncCodexOnStart(loadConfig())) && !stoppingSibling && !connectedClientSkip;
   let deferralHonoredByProxy = false;
   const claimTeardown = (endpoint: { hostname: string; port: number }, endpointSource: "exact" | "guessed") => {
     if (teardownNonce || stoppingSibling) return;
