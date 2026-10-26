@@ -535,7 +535,11 @@ export function reconcileJournal(options: ReconcileJournalOptions = {}): boolean
   }
   if (options.adoptUpdateHandover) {
     // The original baseline and injected-state hashes stay as written; only ownership moves.
-    atomicWriteFile(JOURNAL_PATH, JSON.stringify({ ...journal, pid: process.pid, owner: { kind: "process", pid: process.pid } }));
+    // Published like every other journal write, so a replaced Codex home is refused rather
+    // than overwritten; a refusal preserves both the journal and the config.
+    const adopted = JSON.stringify({ ...journal, pid: process.pid, owner: { kind: "process", pid: process.pid } });
+    try { publishCodexArtifact(JOURNAL_PATH, handle, (path, hooks) => atomicWriteFile(path, adopted, undefined, hooks)); }
+    catch { console.error("⚠️ The Codex journal handed over by an update could not be adopted; the journal and configuration were preserved."); }
     return false;
   }
   const restored = restoreJournalState({ heldConfigWriteLock: handle });

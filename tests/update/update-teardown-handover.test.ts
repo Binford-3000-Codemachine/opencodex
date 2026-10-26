@@ -314,6 +314,27 @@ describe("startup journal recovery under a handover", () => {
       }
     });
   }
+
+  function probe(mode: "swap" | "off"): Record<string, unknown> {
+    const root = mkdtempSync(join(tmpdir(), `ocx-handover-probe-${mode}-`));
+    try {
+      const child = spawnSync(process.execPath, [fixturePath("handover-journal-probe.ts"), mode, root], {
+        cwd: repoPath(), env: { ...process.env }, encoding: "utf8", timeout: 60_000, windowsHide: true,
+      });
+      expect(child.status, child.stderr).toBe(0);
+      return JSON.parse(child.stdout.trim().split("\n").at(-1)!) as Record<string, unknown>;
+    } finally {
+      removeTreeWithRetry(root);
+    }
+  }
+
+  test("adoption never overwrites a Codex home replaced during recovery", () => {
+    expect(probe("swap")).toEqual({ replacementPreserved: true });
+  });
+
+  test("a stale handover receipt does not keep routing once the Codex integration is off", () => {
+    expect(probe("off")).toEqual({ config: '# original\nmodel_provider = "openai"\n', journalExists: false });
+  });
 });
 
 describe("startup publication", () => {
