@@ -2,6 +2,10 @@ import { chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync 
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { resolveCodexRuntimeAsync } from "../codex/runtime";
+import {
+  assertCodexExecTargetTrustedAsync,
+  type CodexExecBoundaryAsyncDeps,
+} from "../codex/exec-boundary";
 import { remoteWorkspaceThreadStartParams } from "./workspace-coordinator";
 import { startRemoteWorkspaceToolBridge } from "./workspace-tool-bridge";
 import { truncateRemoteWorkspaceUtf8 } from "./workspace-utf8";
@@ -288,6 +292,8 @@ export interface CodexRemoteWorkspaceRuntimeOptions {
   command?: readonly string[];
   env?: Record<string, string | undefined>;
   version?: string;
+  /** Test seam for the macOS exec-boundary check; production uses the real platform. */
+  execDeps?: CodexExecBoundaryAsyncDeps;
 }
 
 export class CodexRemoteWorkspaceRuntimeFactory implements RemoteWorkspaceRuntimeFactory {
@@ -315,7 +321,12 @@ export class CodexRemoteWorkspaceRuntimeFactory implements RemoteWorkspaceRuntim
     if (command.length < 1) throw new Error("Codex CLI is unavailable on this Hub");
     const executablePath = isAbsolute(command[0]!) ? command[0]! : findExecutableOnPath(command[0]!);
     if (!executablePath) throw new Error("Codex CLI executable could not be resolved on this Hub");
-    command[0] = executablePath;
+    // The checked canonical path is what the Hub execs, so a symlinked alias or a
+    // swapped bundle cannot route the app-server around the trust decision.
+    command[0] = await assertCodexExecTargetTrustedAsync(executablePath, {
+      env: process.env,
+      ...(this.options.execDeps ?? {}),
+    });
     const runtimeDirectory = dirname(realpathSync(executablePath));
     const isolation = mkdtempSync(join(tmpdir(), "ocx-remote-codex-"));
     let processPath = process.env.PATH ?? "/usr/bin:/bin";

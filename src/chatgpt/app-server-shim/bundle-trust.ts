@@ -19,6 +19,16 @@ export interface BundleTrustDeps {
   codesign(args: readonly string[]): { status: number | null; output: string };
 }
 
+export { defaultAsyncBundleTrustDeps, untrustedChatgptBundleReasonAsync } from "./bundle-trust-async";
+export type { AsyncBundleTrustDeps, TrustCommandSpawn } from "./bundle-trust-async";
+
+export function bundleTrustStat(path: string): ReturnType<BundleTrustDeps["stat"]> {
+  try {
+    const s = lstatSync(path);
+    return { uid: s.uid, gid: s.gid, mode: s.mode, isFile: s.isFile(), isDirectory: s.isDirectory(), isSymbolicLink: s.isSymbolicLink() };
+  } catch { return null; }
+}
+
 export function defaultBundleTrustDeps(): BundleTrustDeps {
   const admin = spawnSync("/usr/bin/dscl", [".", "-read", "/Groups/admin", "PrimaryGroupID"], {
     encoding: "utf8", timeout: 5000,
@@ -27,14 +37,7 @@ export function defaultBundleTrustDeps(): BundleTrustDeps {
   return {
     adminGroupId: adminId === undefined ? undefined : Number(adminId),
     uid: typeof process.getuid === "function" ? process.getuid() : -1,
-    stat(path) {
-      try {
-        const s = lstatSync(path);
-        return { uid: s.uid, gid: s.gid, mode: s.mode, isFile: s.isFile(), isDirectory: s.isDirectory(), isSymbolicLink: s.isSymbolicLink() };
-      } catch {
-        return null;
-      }
-    },
+    stat: bundleTrustStat,
     codesign(args) {
       const result = spawnSync(CODESIGN, [...args], { encoding: "utf8", timeout: CODESIGN_TIMEOUT_MS });
       return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
@@ -42,7 +45,9 @@ export function defaultBundleTrustDeps(): BundleTrustDeps {
   };
 }
 
-function ownedSafely(deps: BundleTrustDeps, path: string, kind: "file" | "directory"): string | null {
+type FilesystemTrustDeps = Omit<BundleTrustDeps, "codesign">;
+
+function ownedSafely(deps: FilesystemTrustDeps, path: string, kind: "file" | "directory"): string | null {
   const s = deps.stat(path);
   if (!s) return "is missing";
   if (s.isSymbolicLink) return "is a symbolic link";
@@ -53,7 +58,7 @@ function ownedSafely(deps: BundleTrustDeps, path: string, kind: "file" | "direct
 }
 
 /** Protect the bundle's directory entry all the way to the filesystem root. */
-function untrustedAncestorReason(bundleRoot: string, deps: BundleTrustDeps): string | null {
+function untrustedAncestorReason(bundleRoot: string, deps: FilesystemTrustDeps): string | null {
   for (let dir = dirname(bundleRoot); ; dir = dirname(dir)) {
     const s = deps.stat(dir);
     if (!s || !s.isDirectory || s.isSymbolicLink) return `${dir} is not a regular ancestor directory`;
@@ -69,19 +74,11 @@ function untrustedAncestorReason(bundleRoot: string, deps: BundleTrustDeps): str
   }
 }
 
-/**
- * Null when the bundle root and the selected executable may be run by this user.
- * Restore omits the app-server binary and validates the app shell instead, so a missing
- * app-server does not prevent returning to a normal launch. Otherwise returns a short reason.
- * Every directory from the binary up to the bundle root, and the
- * binary itself, must be owned by root or this user and not group/other-writable, and both the
- * bundle and the binary must pass strict code-signature verification under OpenAI's team ID.
- * Ancestors above the bundle are also checked for POSIX directory-entry replacement rights.
- */
-export function untrustedChatgptBundleReason(
+/** Shared filesystem policy; the callers separately verify both code signatures. */
+export function untrustedBundleFilesystemReason(
   bundleRoot: string,
   binary: string | undefined = undefined,
-  deps: BundleTrustDeps = defaultBundleTrustDeps(),
+  deps: FilesystemTrustDeps,
 ): string | null {
   const label = binary === undefined ? "app executable" : "app-server binary";
   binary ??= join(bundleRoot, "Contents", "MacOS", "ChatGPT");
@@ -96,12 +93,32 @@ export function untrustedChatgptBundleReason(
   }
   const ancestorProblem = untrustedAncestorReason(bundleRoot, deps);
   if (ancestorProblem) return ancestorProblem;
+  return null;
+}
+
+export function bundleSignatureDetailsReason(target: string, details: { status: number | null; output: string }): string | null {
+  return details.status !== 0 || !new RegExp(`^TeamIdentifier=${OPENAI_TEAM_ID}$`, "m").test(details.output)
+    ? `${target} is not signed by OpenAI (team ${OPENAI_TEAM_ID})` : null;
+}
+
+/**
+ * Null when the bundle root and selected executable pass filesystem and OpenAI signature checks.
+ * Restore omits the app-server binary and validates the app shell instead. Directories and the
+ * binary must be owned by root or this user, non-symlink, and not group/other-writable;
+ * ancestors also pass POSIX directory-entry replacement checks through the filesystem root.
+ */
+export function untrustedChatgptBundleReason(
+  bundleRoot: string,
+  binary: string | undefined = undefined,
+  deps: BundleTrustDeps = defaultBundleTrustDeps(),
+): string | null {
+  const filesystemProblem = untrustedBundleFilesystemReason(bundleRoot, binary, deps);
+  if (filesystemProblem) return filesystemProblem;
+  binary ??= join(bundleRoot, "Contents", "MacOS", "ChatGPT");
   for (const target of [bundleRoot, binary]) {
     if (deps.codesign(["--verify", "--strict", target]).status !== 0) return `${target} failed code-signature verification`;
-    const details = deps.codesign(["-dv", "--verbose=2", target]);
-    if (details.status !== 0 || !new RegExp(`^TeamIdentifier=${OPENAI_TEAM_ID}$`, "m").test(details.output)) {
-      return `${target} is not signed by OpenAI (team ${OPENAI_TEAM_ID})`;
-    }
+    const detailsProblem = bundleSignatureDetailsReason(target, deps.codesign(["-dv", "--verbose=2", target]));
+    if (detailsProblem) return detailsProblem;
   }
   return null;
 }

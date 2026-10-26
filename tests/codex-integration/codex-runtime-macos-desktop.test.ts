@@ -38,7 +38,12 @@ function fixture() {
   const deps: ResolveCodexRuntimeDeps = {
     platform: "darwin", env: { HOME: home.replaceAll("\\", "/"), PATH: "" }, configDir,
     existsSync: path => versions.has(path), execFileSync: exec, execFile: async file => exec(file),
+    // Exec-boundary deps: the same fake filesystem answers spawnability and
+    // canonicalization, and both trust halves are stubbed so no dscl/codesign runs.
+    executable: path => versions.has(path),
+    realpath: path => path,
     macBundleTrustReason: () => null,
+    macBundleTrustReasonAsync: async () => null,
   };
   const pin = (command: string, origin?: "pinned" | "discovered") => writeFileSync(codexRuntimeStatePath(configDir), JSON.stringify({
     version: 1, command, source: "installed", selectedVersion: "0.150.0", updatedAt: "2026-10-13T00:00:00Z", origin,
@@ -282,7 +287,18 @@ describe("bundled app catalog consumer", () => {
         if (kind === "spawn-failure") throw Object.assign(new Error("not found"), { code: "ENOENT" });
         return JSON.stringify({ models: kind === "null-row" ? [null] : kind === "mixed-null-row" ? [native, null] : kind === "array-row" ? [[]] : [native] });
       };
-      const deps = { platform: "darwin" as const, commandCandidates: () => [f.current], configDir: f.deps.configDir, execFileSync: exec, execFile: async () => exec() };
+      // A POSIX-absolute non-bundle candidate: the boundary resolves it on any
+      // host (f.current is a Windows-flavored path this describe cannot use),
+      // and it classifies outside the known bundles so output handling - not
+      // trust - is what is exercised. Fixture versions drive exists/executable.
+      const command = "/fixture/bin/codex";
+      f.versions.set(command, "0.162.0");
+      const deps = {
+        platform: "darwin" as const, commandCandidates: () => [command], configDir: f.deps.configDir,
+        execFileSync: exec, execFile: async () => exec(), env: f.deps.env,
+        existsSync: f.deps.existsSync, executable: f.deps.executable, realpath: f.deps.realpath,
+        macBundleTrustReason: f.deps.macBundleTrustReason, macBundleTrustReasonAsync: f.deps.macBundleTrustReasonAsync,
+      };
       const sync = loadBundledCodexCatalog(deps), asyncResult = await loadBundledCodexCatalogAsync(deps);
       expect(asyncResult).toEqual(sync);
       if (kind === "valid") expect(sync?.models[0]?.slug).toBe("gpt-test");

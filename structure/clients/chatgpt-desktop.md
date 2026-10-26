@@ -52,7 +52,8 @@ The app is discovered and confirmed by bundle identifier through
 `darwinDesktopAppAdapter.discover` (`src/codex/desktop-app/darwin.ts`). Launch derives
 the bundled app-server binary from that root (`resolveChatgptCodexBinary`) and refuses
 when none exists or when `untrustedChatgptBundleReason`
-(`src/chatgpt/app-server-shim/bundle-trust.ts`) reports the bundle or binary as owned
+(`src/chatgpt/app-server-shim/bundle-trust.ts`; the signal-aware async twin in
+`bundle-trust-async.ts` serves the exec boundary) reports the bundle or binary as owned
 by another user, group/other-writable, unsigned, or signed by a team other than
 OpenAI's. It writes the mode-0755 executable through an exclusive temp file and a
 rename (never through a symbolic link), quits the bundle by id, waits for this user's
