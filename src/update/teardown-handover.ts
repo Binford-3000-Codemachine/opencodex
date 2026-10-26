@@ -34,6 +34,22 @@ export function withUpdateTeardownHandover(env: NodeJS.ProcessEnv = process.env)
   return { ...env, [UPDATE_TEARDOWN_HANDOVER_ENV]: "1" };
 }
 
+/** The environment for an update child that must restore as usual, whatever this process inherited. */
+export function withoutUpdateTeardownHandover(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const child = { ...env };
+  delete child[UPDATE_TEARDOWN_HANDOVER_ENV];
+  return child;
+}
+
+/**
+ * Drop the marker from a starting proxy. The updater lanes pass their environment to the
+ * recovery and replacement starts they spawn; a proxy that kept it would hand it to every
+ * dashboard update worker it launches later, including ones that never restart.
+ */
+export function forgetUpdateTeardownHandover(env: NodeJS.ProcessEnv = process.env): void {
+  delete env[UPDATE_TEARDOWN_HANDOVER_ENV];
+}
+
 /** The facts `ocx stop` has already settled when it reaches the shared restore. */
 export type StopHandoverFacts = {
   requested: boolean;
@@ -42,20 +58,27 @@ export type StopHandoverFacts = {
   stopFailed: boolean;
   recoveredCount: number;
   proxy: string;
+  /** What the service-manager stop returned; a manager can take the proxy down itself. */
+  service?: string;
 };
 
 /**
  * May this stop skip the restore and hand its teardown to the restarted proxy?
  *
  * Only when the update asked for it, this run's own receipt is the single obligation in
- * the home, and the proxy it named is down. A recovered or foreign receipt, a blocked
- * restore or a stop that failed on the way all take the ordinary restore instead. The
- * exclusivity check is what lets the updater treat the outstanding receipt as expected.
+ * the home, and the proxy it named is down: stopped by this run, or gone after a clean
+ * service-manager stop (a launchd/systemd/scheduler child exits with its manager, and its
+ * own exit cleanup keeps routing because it runs with OCX_SERVICE). A recovered or foreign
+ * receipt, a blocked restore or a stop that failed on the way all take the ordinary
+ * restore instead. The exclusivity check is what lets the updater treat the outstanding
+ * receipt as expected; the updater still probes the endpoint itself before replacing files.
  */
 export function stopHandsTeardownOver(facts: StopHandoverFacts): boolean {
+  const managerStopped = facts.service === "stopped" || facts.service === "stopped-respawnable";
+  const proxyDown = facts.proxy === "stopped" || facts.proxy === "stopped-orphan"
+    || (facts.proxy === "not-running" && managerStopped);
   return facts.requested && !facts.restoreBlocked && facts.nonce !== undefined && !facts.stopFailed
-    && facts.recoveredCount === 0 && (facts.proxy === "stopped" || facts.proxy === "stopped-orphan")
-    && pendingTeardownsAreExactly([facts.nonce]);
+    && facts.recoveredCount === 0 && proxyDown && pendingTeardownsAreExactly([facts.nonce]);
 }
 
 export function announceStopHandover(log: Pick<Console, "log"> = console): void {

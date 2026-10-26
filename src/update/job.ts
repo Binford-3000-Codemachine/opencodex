@@ -54,7 +54,7 @@ import {
 import { guiUpdateWorkerCommand } from "./worker-launch";
 import { withoutSiblingMarker } from "../codex/sibling-start";
 import { spawnBindProbe, strictBindProbeScript } from "./bind-probe";
-import { withUpdateTeardownHandover } from "./teardown-handover";
+import { withoutUpdateTeardownHandover, withUpdateTeardownHandover } from "./teardown-handover";
 import type { WorkerLaunchContext } from "./worker-launch";
 
 const RELEASE_NOTES_URL = "https://github.com/lidge-jun/opencodex/releases/latest";
@@ -1912,8 +1912,8 @@ export async function runGuiUpdateWorker(
     */
     // #7423: this job restarts the proxy itself, so the update's stop hands Codex routing
     // and the routed catalog to the replacement instead of restoring native Codex for the
-    // seconds in between. Without a restart the stop restores as it always has.
-    const updateEnv = restart ? withUpdateTeardownHandover(process.env) : undefined;
+    // seconds in between. Without a restart the stop restores, even under an inherited marker.
+    const updateEnv = restart ? withUpdateTeardownHandover(process.env) : withoutUpdateTeardownHandover(process.env);
     const result = (io.runCommandFn ?? runLoggedCommand)(job, cmd.bin, cmd.args, UPDATE_TIMEOUT_MS, updateEnv);
     if (result.status !== 0) {
       if (check.installer === "pnpm") {

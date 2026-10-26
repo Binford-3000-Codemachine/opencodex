@@ -43,7 +43,7 @@ import {
 } from "../codex/inject/restore";
 import { stripGrokConfig } from "../grok/inject";
 import { STOP_HISTORY_DEFERRED_EXIT_CODE, STOP_HISTORY_INCOMPLETE_EXIT_CODE, STOP_TEARDOWN_HANDED_OVER_EXIT_CODE } from "../update/stop-contract.mjs";
-import { announceStopHandover, completeUpdateTeardownHandover, stopHandsTeardownOver, updateTeardownHandoverRequested } from "../update/teardown-handover";
+import { announceStopHandover, completeUpdateTeardownHandover, forgetUpdateTeardownHandover, stopHandsTeardownOver, updateTeardownHandoverRequested } from "../update/teardown-handover";
 import {
   describeHistoryJobFailure,
   resolveCodexHistoryJobTarget,
@@ -385,6 +385,7 @@ async function findProxyOwnerBeforeJournalRecovery(
 }
 
 async function handleStart(options: { block?: boolean } = {}) {
+  forgetUpdateTeardownHandover(); // #7423: a recovery start must not pass the marker to its update workers
   updateRestartChild?.check();
   // A supervised service child defers to a foreign recorded owner before doing
   // anything else. 'ocx service start' refuses this activation path already, but
@@ -1172,6 +1173,8 @@ async function handleStopUnlocked(snapshot?: GuardedStopSnapshot) {
   const approvedEndpoint = snapshot
     ? { hostname: probeHostname(snapshot.approval.hostname || undefined), port: snapshot.approval.port }
     : null;
+  // Only an exact runtime endpoint may back a handover; without one the ordinary restore runs.
+  const claimHandoverBeforeManager = () => { const exact = handoverRequested ? endpointOf(readRuntimePort()) : null; if (exact) claimTeardown(exact, "exact"); };
   let guardedStep: Awaited<ReturnType<typeof runGuardedManagerStep>> | null = null;
   try {
     const serviceStop = snapshot
@@ -1187,7 +1190,8 @@ async function handleStopUnlocked(snapshot?: GuardedStopSnapshot) {
         })).service
       // A sibling never runs under a service manager: an installed one belongs to the live owner,
       // and its ownership check would fail this stop and skip the stale-record purge below.
-      : stoppingSibling || connectedClientAlreadyStopped ? "absent" : stopServiceIfInstalledDetailed();
+      // #7423: a manager stop takes the proxy down itself, so a handover claims its receipt first.
+      : stoppingSibling || connectedClientAlreadyStopped ? "absent" : (claimHandoverBeforeManager(), stopServiceIfInstalledDetailed());
     record.service = serviceStop;
     stoppedService = serviceStop === "stopped" || serviceStop === "stopped-respawnable";
     schedulerCanRespawn = serviceStop === "stopped-respawnable";
@@ -1431,7 +1435,7 @@ async function handleStopUnlocked(snapshot?: GuardedStopSnapshot) {
   if (connectedClientSkip) console.log(connectedClientSkip);
   const restoreBlocked = ownershipBlocked || inheritedBlocks || nativeRestoreHandledByProxy || stoppingSibling || connectedClientSkip !== null;
   const handedOver = stopHandsTeardownOver({ requested: handoverRequested, restoreBlocked, nonce: teardownNonce,
-    stopFailed, recoveredCount: recoveredNonces.length, proxy: record.proxy });
+    stopFailed, recoveredCount: recoveredNonces.length, proxy: record.proxy, service: record.service });
   if (handedOver) announceStopHandover();
   else if (!restoreBlocked) {
     if (recoveredNonces.length > 0) {

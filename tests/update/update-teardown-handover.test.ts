@@ -16,6 +16,7 @@ import {
 import { decidePostStopUpdate } from "../../src/update/stop-decision.mjs";
 import {
   dischargeUpdateTeardownHandovers,
+  forgetUpdateTeardownHandover,
   stopHandsTeardownOver,
   UPDATE_TEARDOWN_HANDOVER_ENV,
 } from "../../src/update/teardown-handover";
@@ -94,6 +95,14 @@ describe("stop handover predicate", () => {
     expect(stopHandsTeardownOver(facts(undefined))).toBe(false);
   });
 
+  test("a clean service-manager stop that took the proxy down may hand over", () => {
+    const own = claimPendingTeardown(ENDPOINT, "exact", process.pid, "update-restart").nonce;
+    expect(stopHandsTeardownOver({ ...facts(own), proxy: "not-running", service: "stopped" })).toBe(true);
+    expect(stopHandsTeardownOver({ ...facts(own), proxy: "not-running", service: "stopped-respawnable" })).toBe(true);
+    expect(stopHandsTeardownOver({ ...facts(own), proxy: "not-running", service: "absent" })).toBe(false);
+    expect(stopHandsTeardownOver({ ...facts(own), proxy: "not-running", service: "failed" })).toBe(false);
+  });
+
   test("another obligation in the home forces the ordinary restore", () => {
     const own = claimPendingTeardown(ENDPOINT, "exact", process.pid, "update-restart").nonce;
     claimPendingTeardown(ENDPOINT, "exact", 999_999);
@@ -152,18 +161,18 @@ describe("ocx stop under an update handover", () => {
     artifacts: { config: { state: "restored" }, catalog: { state: "restored" }, history: { state: "restored" } },
   };
 
-  function runStop(handover: boolean) {
+  function runStop(handover: boolean, extra: Record<string, unknown> = {}) {
     const child = spawnSync(process.execPath, [fixturePath("parent-stop-runner.ts")], {
       cwd: repoPath(),
       env: { ...process.env, OPENCODEX_HOME: home },
-      input: JSON.stringify({ receipt: true, serverTeardown: true, json: true, response: null, restore, handover }),
+      input: JSON.stringify({ receipt: true, serverTeardown: true, json: true, response: null, restore, handover, ...extra }),
       encoding: "utf8",
       timeout: 20_000,
       windowsHide: true,
     });
     expect(child.error, child.stderr).toBeUndefined();
     const report = JSON.parse(readFileSync(join(home, "parent-stop-result.json"), "utf8")) as {
-      calls: { native: number; grok: number; cleared: number };
+      calls: { native: number; grok: number; cleared: number; service: number };
       nonce?: string; receiptExists: boolean; unexpectedIo: string[];
     };
     expect(report.unexpectedIo, child.stderr).toEqual([]);
@@ -187,6 +196,20 @@ describe("ocx stop under an update handover", () => {
     expect(run.exitCode, run.stderr).toBe(0);
     expect(run.calls).toMatchObject({ native: 1, grok: 1, cleared: 1 });
     expect(run.receiptExists).toBe(false);
+    expect(receiptNames()).toEqual([]);
+  });
+
+  test("hands over when the service manager stops the proxy itself", () => {
+    const run = runStop(true, { managerCascades: true });
+    expect(run.exitCode, run.stderr).toBe(STOP_TEARDOWN_HANDED_OVER_EXIT_CODE);
+    expect(run.calls).toMatchObject({ native: 0, grok: 0, cleared: 0, service: 1 });
+    expect(isUpdateHandoverReceipt(run.nonce ?? null)).toBe(true);
+  });
+
+  test("a manager-stopped ordinary stop still restores", () => {
+    const run = runStop(false, { managerCascades: true });
+    expect(run.exitCode, run.stderr).toBe(0);
+    expect(run.calls).toMatchObject({ native: 1, grok: 1 });
     expect(receiptNames()).toEqual([]);
   });
 });
@@ -215,6 +238,8 @@ describe("dashboard update job", () => {
   for (const restart of [true, false]) {
     test(`${restart ? "requests" : "does not request"} the handover when restart=${restart}`, async () => {
       let updateEnv: NodeJS.ProcessEnv | undefined;
+      // A worker launched by a recovery-started proxy could have inherited the marker.
+      process.env[UPDATE_TEARDOWN_HANDOVER_ENV] = "1";
       await runGuiUpdateWorker(`handover-${restart}`, "latest", restart, {
         checkForUpdateFn: () => ({
           currentVersion: "2.7.40", latestVersion: "2.7.41", channel: "latest", installer: "pnpm",
@@ -231,10 +256,17 @@ describe("dashboard update job", () => {
         // ends the job before any restart work, which other suites already cover.
         runCommandFn: (_job, _bin, _args, _timeout, env) => { updateEnv = env; return { status: 1, signal: null }; },
       });
-      if (restart) expect(updateEnv?.[UPDATE_TEARDOWN_HANDOVER_ENV]).toBe("1");
-      else expect(updateEnv).toBeUndefined();
+      delete process.env[UPDATE_TEARDOWN_HANDOVER_ENV];
+      expect(updateEnv).toBeDefined();
+      expect(updateEnv?.[UPDATE_TEARDOWN_HANDOVER_ENV]).toBe(restart ? "1" : undefined);
       rmSync(updateJobPath(), { force: true });
     });
   }
+
+  test("a starting proxy forgets an inherited marker", () => {
+    const env: NodeJS.ProcessEnv = { [UPDATE_TEARDOWN_HANDOVER_ENV]: "1", KEEP: "x" };
+    forgetUpdateTeardownHandover(env);
+    expect(env).toEqual({ KEEP: "x" });
+  });
 });
 
