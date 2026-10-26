@@ -265,6 +265,7 @@ describe("ocx v2 keep-native-v1", () => {
     const events: string[] = [];
 
     const code = await cmdV2(["keep-native-v1", "on"], {
+      featuresInvocation: action => ({ file: "codex", args: ["features", action, "multi_agent_v2"], options: {} }),
       execFile: (_file, args) => {
         events.push(featureActionOf(args));
         writeFileSync(codexConfig, readFileSync(codexConfig, "utf8").replace("enabled = true", "enabled = false"));
@@ -304,6 +305,7 @@ describe("ocx v2 keep-native-v1", () => {
     const actions: string[] = [];
 
     expect(await cmdV2(["mode", "v2"], {
+      featuresInvocation: action => ({ file: "codex", args: ["features", action, "multi_agent_v2"], options: {} }),
       execFile: (_file, args) => {
         actions.push(featureActionOf(args).split(" ")[1]!);
         writeFileSync(codexConfig, readFileSync(codexConfig, "utf8").replace("enabled = true", "enabled = false"));

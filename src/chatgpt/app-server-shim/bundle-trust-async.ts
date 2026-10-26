@@ -1,13 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { SUBPROCESS_KILL_GRACE_MS, waitForSubprocessExit } from "../../lib/bounded-subprocess";
-import { bundleSignatureDetailsReason, bundleTrustStat, untrustedBundleFilesystemReason, type BundleTrustDeps } from "./bundle-trust";
+import { bundleSignatureDetailsReason, bundleTrustStat, untrustedBundleFilesystemReason, type AsyncBundleTrustDeps } from "./bundle-trust-policy";
+
+export type { AsyncBundleTrustDeps } from "./bundle-trust-policy";
 
 type CommandResult = { status: number | null; output: string; stdout: string };
-export interface AsyncBundleTrustDeps extends Omit<BundleTrustDeps, "codesign"> {
-  codesign(args: readonly string[], signal?: AbortSignal): Promise<{ status: number | null; output: string }>;
-}
-
 // Match spawnSync's default per-stream maxBuffer. Overflow never supplies successful trust evidence.
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 

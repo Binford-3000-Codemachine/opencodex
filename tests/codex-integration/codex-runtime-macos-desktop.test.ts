@@ -19,7 +19,7 @@ const ID = "<key>CFBundleIdentifier</key><string>com.openai.codex</string>";
 const plist = (body = ID) => `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>${body}</dict></plist>`;
 
 function fixture() {
-  const home = mkdtempSync(join(tmpdir(), "ocx-mac-runtime-"));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "ocx-mac-runtime-")));
   roots.push(home);
   const bundle = posix.join(home.replaceAll("\\", "/"), "Applications/ChatGPT.app");
   const configDir = join(home, "config");
@@ -38,10 +38,10 @@ function fixture() {
   const deps: ResolveCodexRuntimeDeps = {
     platform: "darwin", env: { HOME: home.replaceAll("\\", "/"), PATH: "" }, configDir,
     existsSync: path => versions.has(path), execFileSync: exec, execFile: async file => exec(file),
-    // Exec-boundary deps: the same fake filesystem answers spawnability and
-    // canonicalization, and both trust halves are stubbed so no dscl/codesign runs.
+    // Virtual executables stay injected; real fixture symlinks retain their
+    // canonical targets. Both trust halves are stubbed so no dscl/codesign runs.
     executable: path => versions.has(path),
-    realpath: path => path,
+    realpath: path => { try { return realpathSync(path); } catch { return path; } },
     macBundleTrustReason: () => null,
     macBundleTrustReasonAsync: async () => null,
   };
@@ -85,12 +85,15 @@ describe.skipIf(process.platform === "win32")("macOS Codex app runtime discovery
     test(`${source} precedes the app during version discovery`, () => {
       const f = fixture();
       const command = source === "fallback" ? "codex" : source === "installed" ? "/usr/local/bin/codex" : "/fixture/bin/codex";
-      f.versions.set(command, "0.150.0"); f.versions.set(f.current, "0.162.0");
+      f.versions.set(source === "fallback" ? "/usr/bin/codex" : command, "0.150.0"); f.versions.set(f.current, "0.162.0");
+      // No enumerated PATH candidates: execvp still finds the bare fallback on its default path.
+      if (source === "fallback") delete f.deps.env!.PATH;
       if (source === "environment") f.deps.env!.CODEX_CLI_PATH = command;
       if (source === "configured") f.pin(command, "pinned");
       if (source === "shim") writeFileSync(join(f.deps.configDir!, "codex-shim.json"), JSON.stringify({ originalPath: command }));
       if (source === "path") f.deps.env!.PATH = "/fixture/bin";
       expect(resolveCodexRuntime(f.deps).runtime).toEqual({ command, source, version: "0.150.0" });
+      if (source === "fallback") expect(f.probed).toContain("/usr/bin/codex");
     });
   }
 
@@ -211,11 +214,14 @@ describe.skipIf(process.platform === "win32")("macOS Codex app runtime discovery
     const link = posix.join(f.deps.env!.HOME!, ".local/bin/codex");
     mkdirSync(posix.dirname(link), { recursive: true });
     symlinkSync(f.current, link);
-    f.versions.set(link, "0.150.0"); f.versions.set(f.current, "0.162.0");
+    // The alias and its backing executable are one binary and expose one version.
+    f.versions.set(link, "0.150.0"); f.versions.set(f.current, "0.150.0");
     let reads = 0;
     f.deps.readBundleIdentifier = () => { reads++; return "com.openai.codex"; };
     // The link is an established install: it precedes the app candidates and is identity-checked.
     expect(resolveCodexRuntime(f.deps).runtime).toEqual({ command: link, source: "installed", version: "0.150.0" });
+    expect(f.probed).toContain(f.current);
+    expect(f.probed).not.toContain(link);
     expect(reads).toBeGreaterThan(0);
     f.deps.readBundleIdentifier = () => "com.example.other";
     expect(resolveCodexRuntime(f.deps).runtime.source).toBe("fallback");

@@ -65,6 +65,8 @@ through the filesystem root. Ancestors must be owned by this user or root; group
 is accepted only for trusted sticky ancestors or root-owned, non-world-writable containers
 whose group matches the local directory service's admin group. An unreadable admin-group lookup
 does not grant that exception. These checks do not attest ACL or mount-policy restrictions.
+Both drivers share filesystem/signature policy and dependency types from
+`src/chatgpt/app-server-shim/bundle-trust-policy.ts`, which imports neither driver and starts no subprocess.
 Restore does not require the experimental flag or a bundled
 app-server binary. It relaunches without that override and removes the launcher only after open succeeds; when no
 `com.openai.codex` bundle is found it removes the launcher, relaunches nothing and
